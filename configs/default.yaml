@@ -1,0 +1,31 @@
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  model_dir: models/default
+  web_dir: web
+
+model:
+  base_model: uer/gpt2-distil-chinese-cluecorpussmall
+  device: cpu
+  max_input_tokens: 192
+  max_new_tokens: 48
+  temperature: 0.85
+  top_p: 0.92
+  repetition_penalty: 1.08
+
+training:
+  block_size: 192
+  validation_ratio: 0.1
+  num_train_epochs: 3
+  learning_rate: 0.0002
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+
+confidence:
+  threshold: 0.18
+  min_token_probability: 0.01
+  max_repeat_ratio: 0.35
+  calibration_percentile: 20

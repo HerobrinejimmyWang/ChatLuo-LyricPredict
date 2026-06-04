@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LyricPredict</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>LyricPredict</h1>
+            <p id="statusText">Ready</p>
+          </div>
+          <label class="file-button">
+            <input id="fileInput" type="file" accept=".txt,.lrc" multiple />
+            <span>Import</span>
+          </label>
+        </header>
+
+        <section class="editor-row">
+          <div class="editor-pane">
+            <label for="contextInput">Context</label>
+            <textarea id="contextInput" spellcheck="false" placeholder="输入一小段歌词上下文"></textarea>
+            <div class="actions">
+              <button id="predictButton" type="button">Predict</button>
+              <button id="continueButton" type="button">Continue F8</button>
+            </div>
+          </div>
+
+          <div class="output-pane">
+            <div class="output-head">
+              <span>Output</span>
+              <span id="confidenceText">--</span>
+            </div>
+            <div id="outputText" class="output-text"></div>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
