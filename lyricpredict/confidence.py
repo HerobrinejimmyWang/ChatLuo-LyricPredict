@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+REPEATED_CJK_RE = re.compile(r"([\u4e00-\u9fff])\1{3,}")
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,17 @@ def repetition_ratio(text: str, n: int = 3) -> float:
     return repeated / len(grams)
 
 
+def cjk_count(text: str) -> int:
+    return sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+
+
+def dominant_cjk_ratio(text: str) -> float:
+    chars = [char for char in text if "\u4e00" <= char <= "\u9fff"]
+    if not chars:
+        return 0.0
+    return max(chars.count(char) for char in set(chars)) / len(chars)
+
+
 def score_candidate(token_probabilities: list[float], text: str) -> float:
     if not token_probabilities:
         return 0.0
@@ -50,6 +64,14 @@ class ConfidenceGate:
             return ConfidenceResult(False, 0.0, "no_terminator")
         if not text.strip():
             return ConfidenceResult(False, 0.0, "empty")
+        if "##" in text:
+            return ConfidenceResult(False, 0.0, "subword_artifact")
+        if cjk_count(text) < 2:
+            return ConfidenceResult(False, 0.0, "too_little_chinese")
+        if REPEATED_CJK_RE.search(text):
+            return ConfidenceResult(False, 0.0, "repeated_character")
+        if cjk_count(text) >= 8 and dominant_cjk_ratio(text) > 0.35:
+            return ConfidenceResult(False, 0.0, "dominant_character")
         confidence = score_candidate(token_probabilities, text)
         min_probability = min(token_probabilities) if token_probabilities else 0.0
         repeat = repetition_ratio(text)

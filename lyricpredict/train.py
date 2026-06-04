@@ -2,25 +2,74 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import load_config
 
+TERMINATORS = (",", ".", "，", "。")
+
+
+def cjk_count(text: str) -> int:
+    return sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+
+
+def should_keep_training_line(line: str, tokenizer, include_non_chinese: bool, max_unk_ratio: float) -> bool:
+    if not line:
+        return False
+    if not include_non_chinese and cjk_count(line) == 0:
+        return False
+    token_ids = tokenizer.encode(line, add_special_tokens=False)
+    if not token_ids:
+        return False
+    if tokenizer.unk_token_id is not None:
+        unk_ratio = sum(1 for token_id in token_ids if token_id == tokenizer.unk_token_id) / len(token_ids)
+        if unk_ratio > max_unk_ratio:
+            return False
+    return True
+
+
+def ensure_training_terminator(line: str) -> str:
+    return line if line.endswith(TERMINATORS) else f"{line}。"
+
 
 class TextBlockDataset:
-    def __init__(self, path: Path, tokenizer, block_size: int):
+    def __init__(
+        self,
+        path: Path,
+        tokenizer,
+        block_size: int,
+        limit_blocks: int | None = None,
+        include_non_chinese: bool = False,
+        max_unk_ratio: float = 0.2,
+    ):
         import torch
 
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         if not text.strip():
             raise ValueError(f"No training text found in {path}. Run prepare first.")
-        encoded = tokenizer(text, add_special_tokens=True)["input_ids"]
+        encoded: list[int] = []
+        self.total_lines = 0
+        self.kept_lines = 0
+        self.skipped_lines = 0
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            self.total_lines += 1
+            if not should_keep_training_line(line, tokenizer, include_non_chinese, max_unk_ratio):
+                self.skipped_lines += 1
+                continue
+            self.kept_lines += 1
+            encoded.extend(tokenizer.encode(ensure_training_terminator(line), add_special_tokens=False))
         self.examples = []
         for index in range(0, max(1, len(encoded) - 1), block_size):
             block = encoded[index : index + block_size]
             if len(block) >= 8:
                 tensor = torch.tensor(block, dtype=torch.long)
                 self.examples.append({"input_ids": tensor, "labels": tensor.clone()})
+            if limit_blocks is not None and len(self.examples) >= limit_blocks:
+                break
         if not self.examples:
             raise ValueError(f"Not enough tokens to train from {path}.")
 
@@ -31,19 +80,72 @@ class TextBlockDataset:
         return self.examples[index]
 
 
+@dataclass
+class CausalLMCollator:
+    pad_token_id: int
+
+    def __call__(self, features):
+        import torch
+
+        max_length = max(len(feature["input_ids"]) for feature in features)
+        input_ids = []
+        attention_mask = []
+        labels = []
+        for feature in features:
+            ids = feature["input_ids"]
+            pad_length = max_length - len(ids)
+            input_ids.append(torch.cat([ids, torch.full((pad_length,), self.pad_token_id, dtype=torch.long)]))
+            attention_mask.append(torch.cat([torch.ones(len(ids), dtype=torch.long), torch.zeros(pad_length, dtype=torch.long)]))
+            labels.append(torch.cat([ids.clone(), torch.full((pad_length,), -100, dtype=torch.long)]))
+        return {
+            "input_ids": torch.stack(input_ids),
+            "attention_mask": torch.stack(attention_mask),
+            "labels": torch.stack(labels),
+        }
+
+
+def configure_tokenizer_and_model(tokenizer, model) -> None:
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.unk_token or tokenizer.sep_token or tokenizer.cls_token
+
+    model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.eos_token_id = None
+    model.config.bos_token_id = None
+    if getattr(model.config, "vocab_size", None) != len(tokenizer):
+        model.resize_token_embeddings(len(tokenizer))
+
+
+def model_context_length(model) -> int:
+    candidates = [
+        getattr(model.config, "n_positions", None),
+        getattr(model.config, "n_ctx", None),
+        getattr(model.config, "max_position_embeddings", None),
+    ]
+    return min(value for value in candidates if isinstance(value, int) and value > 0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fine-tune the lyric model with LoRA when available.")
     parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--max-steps", type=int, default=None, help="Optional short-run override for smoke tests.")
+    parser.add_argument("--output-dir", default=None, help="Optional model output directory override.")
+    parser.add_argument("--limit-train-blocks", type=int, default=None, help="Optional dataset limit for smoke tests.")
+    parser.add_argument("--limit-eval-blocks", type=int, default=None, help="Optional eval dataset limit for smoke tests.")
+    parser.add_argument("--include-non-chinese", action="store_true", help="Keep lines without CJK characters.")
+    parser.add_argument("--max-unk-ratio", type=float, default=0.2, help="Skip lines above this tokenizer [UNK] ratio.")
     args = parser.parse_args()
     config = load_config(args.config)
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling, Trainer, TrainingArguments
+    from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
-    tokenizer = AutoTokenizer.from_pretrained(config.model.base_model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = AutoTokenizer.from_pretrained(config.model.base_model, local_files_only=True)
+    model = AutoModelForCausalLM.from_pretrained(config.model.base_model, use_safetensors=True, local_files_only=True)
+    configure_tokenizer_and_model(tokenizer, model)
 
-    model = AutoModelForCausalLM.from_pretrained(config.model.base_model)
+    block_size = min(config.training.block_size, model_context_length(model))
+    if block_size != config.training.block_size:
+        print(f"Training block_size clamped from {config.training.block_size} to model context length {block_size}.")
+
     try:
         from peft import LoraConfig, TaskType, get_peft_model
 
@@ -52,21 +154,50 @@ def main() -> None:
             r=config.training.lora_r,
             lora_alpha=config.training.lora_alpha,
             lora_dropout=config.training.lora_dropout,
+            target_modules=["c_attn", "c_proj", "c_fc"],
         )
         model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
     except Exception as exc:
         print(f"LoRA is unavailable; training full model instead: {exc}")
 
-    train_dataset = TextBlockDataset(config.paths.processed_dir / "train.txt", tokenizer, config.training.block_size)
+    train_dataset = TextBlockDataset(
+        config.paths.processed_dir / "train.txt",
+        tokenizer,
+        block_size,
+        limit_blocks=args.limit_train_blocks,
+        include_non_chinese=args.include_non_chinese,
+        max_unk_ratio=args.max_unk_ratio,
+    )
     eval_path = config.paths.processed_dir / "valid.txt"
-    eval_dataset = TextBlockDataset(eval_path, tokenizer, config.training.block_size) if eval_path.exists() and eval_path.read_text(encoding="utf-8").strip() else None
+    eval_dataset = (
+        TextBlockDataset(
+            eval_path,
+            tokenizer,
+            block_size,
+            limit_blocks=args.limit_eval_blocks,
+            include_non_chinese=args.include_non_chinese,
+            max_unk_ratio=args.max_unk_ratio,
+        )
+        if eval_path.exists() and eval_path.read_text(encoding="utf-8").strip()
+        else None
+    )
+    print(
+        f"Train lines kept/skipped: {train_dataset.kept_lines}/{train_dataset.skipped_lines}; "
+        f"blocks: {len(train_dataset)}"
+    )
+    if eval_dataset is not None:
+        print(
+            f"Eval lines kept/skipped: {eval_dataset.kept_lines}/{eval_dataset.skipped_lines}; "
+            f"blocks: {len(eval_dataset)}"
+        )
 
-    output_dir = config.paths.model_dir
+    output_dir = Path(args.output_dir) if args.output_dir else config.paths.model_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     training_args = TrainingArguments(
         output_dir=str(output_dir),
-        overwrite_output_dir=True,
         num_train_epochs=config.training.num_train_epochs,
+        max_steps=args.max_steps if args.max_steps is not None else -1,
         per_device_train_batch_size=config.training.batch_size,
         per_device_eval_batch_size=config.training.batch_size,
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
@@ -75,9 +206,9 @@ def main() -> None:
         save_strategy="epoch",
         eval_strategy="epoch" if eval_dataset is not None else "no",
         report_to=[],
-        no_cuda=config.model.device == "cpu",
+        use_cpu=config.model.device == "cpu",
     )
-    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    collator = CausalLMCollator(pad_token_id=tokenizer.pad_token_id)
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -88,7 +219,10 @@ def main() -> None:
     trainer.train()
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
-    (output_dir / "training_config.json").write_text(json.dumps({"base_model": config.model.base_model}, indent=2), encoding="utf-8")
+    (output_dir / "training_config.json").write_text(
+        json.dumps({"base_model": config.model.base_model, "block_size": block_size}, indent=2),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

@@ -43,7 +43,11 @@ def main() -> None:
         if prediction.confidence > 0:
             scores.append(prediction.confidence)
 
-    threshold = percentile(scores, config.confidence.calibration_percentile) if scores else config.confidence.threshold
+    threshold = (
+        percentile(scores, config.confidence.calibration_percentile)
+        if len(scores) >= 8
+        else config.confidence.threshold
+    )
     settings = ConfidenceSettings(
         threshold=threshold,
         min_token_probability=config.confidence.min_token_probability,

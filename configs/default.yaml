@@ -5,13 +5,14 @@ paths:
   web_dir: web
 
 model:
-  base_model: uer/gpt2-distil-chinese-cluecorpussmall
+  base_model: souljoy/gpt2-small-chinese-cluecorpussmall
   device: cpu
   max_input_tokens: 192
-  max_new_tokens: 48
+  max_new_tokens: 96
   temperature: 0.85
   top_p: 0.92
   repetition_penalty: 1.08
+  generation_attempts: 4
 
 training:
   block_size: 192
@@ -25,7 +26,7 @@ training:
   lora_dropout: 0.05
 
 confidence:
-  threshold: 0.18
-  min_token_probability: 0.01
+  threshold: 0.05
+  min_token_probability: 0.005
   max_repeat_ratio: 0.35
   calibration_percentile: 20

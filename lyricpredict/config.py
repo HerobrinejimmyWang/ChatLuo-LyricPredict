@@ -22,6 +22,7 @@ class ModelConfig:
     temperature: float
     top_p: float
     repetition_penalty: float
+    generation_attempts: int
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,7 @@ def load_config(config_path: str | Path = "configs/default.yaml") -> AppConfig:
             temperature=float(model.get("temperature", 0.85)),
             top_p=float(model.get("top_p", 0.92)),
             repetition_penalty=float(model.get("repetition_penalty", 1.08)),
+            generation_attempts=int(model.get("generation_attempts", 4)),
         ),
         training=TrainingConfig(
             block_size=int(training.get("block_size", 192)),

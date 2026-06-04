@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from .confidence import ConfidenceGate, ConfidenceResult, ConfidenceSettings, lo
 from .config import AppConfig
 
 TERMINATORS = (",", ".", "，", "。")
+CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
+SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,，.。])")
+SPACE_AFTER_PUNCT_RE = re.compile(r"([,，.。])\s+")
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,34 @@ def token_count_for_text(token_pieces: list[str], target_text: str) -> int:
         if len(built) >= len(target_text):
             return index
     return len(token_pieces)
+
+
+def decode_generated_ids(tokenizer, token_ids: list[int]) -> str:
+    decoded = tokenizer.decode(token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+    decoded = decoded.replace("##", "")
+    decoded = CJK_SPACE_RE.sub("", decoded)
+    decoded = SPACE_BEFORE_PUNCT_RE.sub(r"\1", decoded)
+    decoded = SPACE_AFTER_PUNCT_RE.sub(r"\1", decoded)
+    return decoded
+
+
+def token_count_for_decoded_text(tokenizer, token_ids: list[int], target_text: str) -> int:
+    for index in range(1, len(token_ids) + 1):
+        decoded = decode_generated_ids(tokenizer, token_ids[:index]).strip()
+        if decoded.startswith(target_text) or len(decoded) >= len(target_text):
+            return index
+    return len(token_ids)
+
+
+def configure_tokenizer_and_model(tokenizer, model) -> None:
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.unk_token or tokenizer.sep_token or tokenizer.cls_token
+
+    model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.eos_token_id = None
+    model.config.bos_token_id = None
+    if getattr(model.config, "vocab_size", None) != len(tokenizer):
+        model.resize_token_embeddings(len(tokenizer))
 
 
 class LyricGenerator:
@@ -68,10 +100,12 @@ class LyricGenerator:
             from peft import PeftModel
 
             base_model_name = self.config.model.base_model
-            base = AutoModelForCausalLM.from_pretrained(base_model_name)
+            base = AutoModelForCausalLM.from_pretrained(base_model_name, use_safetensors=True, local_files_only=True)
+            configure_tokenizer_and_model(self.tokenizer, base)
             self.model = PeftModel.from_pretrained(base, str(adapter_path))
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(source)
+            self.model = AutoModelForCausalLM.from_pretrained(source, use_safetensors=True)
+        configure_tokenizer_and_model(self.tokenizer, self.model)
 
         device = self.config.model.device
         if device != "cpu" and not torch.cuda.is_available():
@@ -84,7 +118,15 @@ class LyricGenerator:
         if not context:
             return Prediction("", False, 0.0, "empty_context")
         self.load()
-        return self._predict_loaded(context)
+        best_rejection = Prediction("", False, 0.0, "no_attempt")
+        attempts = max(1, self.config.model.generation_attempts)
+        for _ in range(attempts):
+            prediction = self._predict_loaded(context)
+            if prediction.accepted:
+                return prediction
+            if prediction.confidence >= best_rejection.confidence:
+                best_rejection = prediction
+        return best_rejection
 
     def _predict_loaded(self, context: str) -> Prediction:
         import torch
@@ -110,17 +152,17 @@ class LyricGenerator:
                 temperature=self.config.model.temperature,
                 top_p=self.config.model.top_p,
                 repetition_penalty=self.config.model.repetition_penalty,
+                no_repeat_ngram_size=4,
                 pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=None,
                 return_dict_in_generate=True,
                 output_scores=True,
             )
 
         new_ids = output.sequences[0][input_length:].detach().cpu().tolist()
-        token_pieces = [self.tokenizer.decode([token_id], skip_special_tokens=True) for token_id in new_ids]
-        generated_text = "".join(token_pieces)
+        generated_text = decode_generated_ids(self.tokenizer, new_ids)
         cut_text, ended = cut_at_terminator(generated_text)
-        used_tokens = token_count_for_text(token_pieces, cut_text) if ended else len(new_ids)
+        used_tokens = token_count_for_decoded_text(self.tokenizer, new_ids, cut_text) if ended else len(new_ids)
 
         probabilities: list[float] = []
         for step, token_id in enumerate(new_ids[:used_tokens]):

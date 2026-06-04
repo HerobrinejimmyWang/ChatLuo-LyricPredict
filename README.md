@@ -15,7 +15,7 @@ If you prefer pip inside an existing environment:
 pip install -r requirements.txt
 ```
 
-The default model is `uer/gpt2-distil-chinese-cluecorpussmall`, which is small enough for CPU inference after the first download.
+The default model is `souljoy/gpt2-small-chinese-cluecorpussmall`, which provides safetensors weights on the main branch and can run on CPU after the first download. You can switch to another Chinese causal language model in `configs/default.yaml` as long as it can be loaded safely by your local PyTorch/Transformers versions.
 
 ## Prepare Lyrics
 
