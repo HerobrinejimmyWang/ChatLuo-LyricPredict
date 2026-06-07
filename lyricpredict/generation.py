@@ -6,6 +6,9 @@ from pathlib import Path
 
 from .confidence import ConfidenceGate, ConfidenceResult, ConfidenceSettings, load_confidence_settings
 from .config import AppConfig
+from .context import extract_lyric_context
+from .ngram_model import CharNGramModel
+from .retrieval import LyricRetriever
 
 TERMINATORS = (",", ".", "，", "。")
 CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
@@ -22,10 +25,12 @@ class Prediction:
 
 
 def cut_at_terminator(text: str) -> tuple[str, bool]:
-    positions = [text.find(mark) for mark in TERMINATORS if text.find(mark) >= 0]
+    has_leading_terminator = text[:1] in TERMINATORS
+    search_start = 1 if has_leading_terminator else 0
+    positions = [text.find(mark, search_start) for mark in TERMINATORS if text.find(mark, search_start) >= 0]
     if not positions:
         return text.strip(), False
-    end = min(positions) + 1
+    end = min(positions) if has_leading_terminator else min(positions) + 1
     return text[:end].strip(), True
 
 
@@ -67,14 +72,30 @@ def configure_tokenizer_and_model(tokenizer, model) -> None:
 
 
 class LyricGenerator:
-    def __init__(self, config: AppConfig):
+    def __init__(
+        self,
+        config: AppConfig,
+        mode: str | None = None,
+        model_fallback_after_retrieval: bool | None = None,
+    ):
         self.config = config
+        self.mode = (mode or config.inference.mode).replace("_", "-").lower()
+        if self.mode not in {"auto", "model-only", "retrieval"}:
+            raise ValueError(f"Unsupported inference mode: {mode}")
+        self.model_fallback_after_retrieval = (
+            config.inference.model_fallback_after_retrieval
+            if model_fallback_after_retrieval is None
+            else model_fallback_after_retrieval
+        )
         defaults = ConfidenceSettings(
             threshold=config.confidence.threshold,
             min_token_probability=config.confidence.min_token_probability,
             max_repeat_ratio=config.confidence.max_repeat_ratio,
         )
         self.confidence_gate = ConfidenceGate(load_confidence_settings(config.paths.model_dir, defaults))
+        root_dir = config.paths.processed_dir.parent.parent
+        self.retriever = LyricRetriever(config.paths.processed_dir, extra_dirs=(root_dir / "selflyricdata",))
+        self.ngram_model: CharNGramModel | None | bool = False
         self.tokenizer = None
         self.model = None
 
@@ -113,15 +134,35 @@ class LyricGenerator:
         self.model.to(device)
         self.model.eval()
 
+    def load_ngram_model(self) -> CharNGramModel | None:
+        if self.ngram_model is False:
+            self.ngram_model = CharNGramModel.load(self.config.paths.model_dir / "ngram_model.json")
+        return self.ngram_model
+
     def predict(self, context: str) -> Prediction:
         context = context.strip()
         if not context:
             return Prediction("", False, 0.0, "empty_context")
+        lyric_context = extract_lyric_context(context)
+        if self.mode in {"auto", "retrieval"}:
+            retrieved = self.retriever.find_next_line(lyric_context)
+            if retrieved is not None:
+                return Prediction(retrieved.text, True, retrieved.confidence, retrieved.reason)
+            if self.mode == "retrieval" or not self.model_fallback_after_retrieval:
+                return Prediction("", False, 0.0, "no_retrieval_match")
+        ngram_model = self.load_ngram_model()
+        if ngram_model is not None:
+            ngram_prediction = ngram_model.predict(lyric_context, max_chars=self.config.model.max_new_tokens)
+            if ngram_prediction is not None:
+                result = self.confidence_gate.evaluate(ngram_prediction.text, [ngram_prediction.confidence], True)
+                if result.accepted:
+                    return Prediction(ngram_prediction.text, True, ngram_prediction.confidence, ngram_prediction.reason)
+            return Prediction("", False, 0.0, "no_model_match")
         self.load()
         best_rejection = Prediction("", False, 0.0, "no_attempt")
         attempts = max(1, self.config.model.generation_attempts)
         for _ in range(attempts):
-            prediction = self._predict_loaded(context)
+            prediction = self._predict_loaded(lyric_context)
             if prediction.accepted:
                 return prediction
             if prediction.confidence >= best_rejection.confidence:

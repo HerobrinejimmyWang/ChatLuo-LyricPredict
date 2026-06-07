@@ -14,10 +14,22 @@
             <h1>LyricPredict</h1>
             <p id="statusText">Ready</p>
           </div>
-          <label class="file-button">
-            <input id="fileInput" type="file" accept=".txt,.lrc" multiple />
-            <span>Import</span>
-          </label>
+          <div class="topbar-controls">
+            <fieldset class="mode-switch" aria-label="Inference mode">
+              <label>
+                <input type="radio" name="mode" value="model-only" />
+                <span>Model</span>
+              </label>
+              <label>
+                <input type="radio" name="mode" value="retrieval" />
+                <span>Retrieval</span>
+              </label>
+            </fieldset>
+            <label class="file-button">
+              <input id="fileInput" type="file" accept=".txt,.lrc" multiple />
+              <span>Import</span>
+            </label>
+          </div>
         </header>
 
         <section class="editor-row">
@@ -35,6 +47,7 @@
               <span>Output</span>
               <span id="confidenceText">--</span>
             </div>
+            <div id="modeText" class="mode-readout">Model-only</div>
             <div id="outputText" class="output-text"></div>
           </div>
         </section>

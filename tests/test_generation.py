@@ -9,6 +9,10 @@ def test_cut_at_english_terminator_keeps_mark():
     assert cut_at_terminator("hello world. more") == ("hello world.", True)
 
 
+def test_cut_allows_leading_comma_before_next_terminator():
+    assert cut_at_terminator("，你脸颊热泪，后面不要") == ("，你脸颊热泪", True)
+
+
 def test_cut_without_terminator_marks_unfinished():
     assert cut_at_terminator("没有结束符") == ("没有结束符", False)
 

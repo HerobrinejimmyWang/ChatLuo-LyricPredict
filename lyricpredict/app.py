@@ -19,6 +19,7 @@ from .importer import SUPPORTED_SUFFIXES, prepare_dataset, write_uploaded_file
 class PredictRequest(BaseModel):
     context: str = Field(min_length=1)
     continue_: bool = Field(default=True, alias="continue")
+    mode: str | None = None
 
 
 class PredictResponse(BaseModel):
@@ -39,7 +40,13 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    generator = LyricGenerator(config)
+    generators: dict[str, LyricGenerator] = {}
+
+    def get_generator(mode: str | None = None) -> LyricGenerator:
+        key = mode or config.inference.mode
+        if key not in generators:
+            generators[key] = LyricGenerator(config, mode=mode)
+        return generators[key]
 
     @app.post("/api/import")
     async def import_lyrics(files: Annotated[list[UploadFile], File()]):
@@ -57,7 +64,7 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
 
     @app.post("/api/predict", response_model=PredictResponse)
     async def predict(request: PredictRequest):
-        prediction = generator.predict(request.context)
+        prediction = get_generator(request.mode).predict(request.context)
         return PredictResponse(
             text=prediction.text,
             accepted=prediction.accepted,

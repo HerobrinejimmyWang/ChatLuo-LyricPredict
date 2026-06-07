@@ -1,38 +1,23 @@
-# LyricPredict Agent Notes
+# LyricPredict
 
-LyricPredict is a local personal-use lyric continuation app. It imports `.lrc`/`.txt` lyrics, fine-tunes a small CPU-capable Chinese GPT-2 model with LoRA, and predicts one following lyric sentence up to `,`, `.`, `，`, or `。`. Low-confidence or malformed generations must return no text.
+LyricPredict is a local, personal-use lyric continuation project. It imports `.txt` and `.lrc` lyric files, fine-tunes or loads a small Transformer causal language model, and predicts one following lyric sentence at a time.
 
-## Environment
+Core context:
 
-- Conda env: `lyricpredict`
-- Python entrypoints:
-  - `python -m lyricpredict.prepare --config configs/default.yaml`
-  - `python -m lyricpredict.train --config configs/default.yaml`
-  - `python -m lyricpredict.calibrate --config configs/default.yaml`
-  - `python -m lyricpredict.serve --config configs/default.yaml --host 127.0.0.1 --port 8002`
+- CPU inference must work.
+- Generation stops at an English or Chinese comma/period.
+- Low-confidence, garbled, repetitive, or unfinished outputs must return an empty string.
+- The Web UI supports lyric upload, context input, a continue button, and `F8` for continuing the next sentence.
+- Main configuration lives in `configs/default.yaml`; the default fine-tuned output is usually `models/default`.
 
-## Current Model/Data
-
-- Base model: `souljoy/gpt2-small-chinese-cluecorpussmall`
-- Fine-tuned adapter output: `models/default`
-- User lyric source: `selflyricdata`
-- Processed data: `data/processed`
-- Training filters skip non-Chinese or high-`[UNK]` lines; line endings are normalized by appending `。` during training when no terminator exists.
-
-## Implementation Notes
-
-- Generation uses multiple sampling attempts (`generation_attempts`) and rejects bad outputs via confidence gates.
-- Token decoding must decode the whole generated sequence, not token-by-token, to avoid WordPiece `##` artifacts.
-- Keep output empty when rejected; the Web UI should not append rejected text.
-- The model may generate Simplified/Traditional mixed Chinese. Prefer normalization/post-processing over assuming embeddings are aligned.
-
-## Verification
-
-Run:
+Useful commands:
 
 ```powershell
-$env:TMP = (Join-Path (Get-Location) '.tmp')
-$env:TEMP = $env:TMP
-python -m pytest -q --basetemp .tmp\pytest -o cache_dir=.tmp\pytest-cache
+python -m lyricpredict.prepare --config configs/default.yaml
+python -m lyricpredict.train --config configs/default.yaml
+python -m lyricpredict.calibrate --config configs/default.yaml
+python -m lyricpredict.serve --config configs/default.yaml --host 127.0.0.1 --port 8002
+python -m pytest -q
 ```
 
+Local data and model artifacts include `selflyricdata`, `data/processed`, and `models`. Avoid mixing testcase lyrics into training data when changing training, evaluation, or filtering rules.

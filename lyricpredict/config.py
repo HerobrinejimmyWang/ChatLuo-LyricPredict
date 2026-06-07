@@ -47,11 +47,18 @@ class ConfidenceConfig:
 
 
 @dataclass(frozen=True)
+class InferenceConfig:
+    mode: str
+    model_fallback_after_retrieval: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     paths: PathsConfig
     model: ModelConfig
     training: TrainingConfig
     confidence: ConfidenceConfig
+    inference: InferenceConfig
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -78,6 +85,7 @@ def load_config(config_path: str | Path = "configs/default.yaml") -> AppConfig:
     model = raw.get("model", {})
     training = raw.get("training", {})
     confidence = raw.get("confidence", {})
+    inference = raw.get("inference", {})
 
     return AppConfig(
         paths=PathsConfig(
@@ -112,5 +120,9 @@ def load_config(config_path: str | Path = "configs/default.yaml") -> AppConfig:
             min_token_probability=float(confidence.get("min_token_probability", 0.01)),
             max_repeat_ratio=float(confidence.get("max_repeat_ratio", 0.35)),
             calibration_percentile=int(confidence.get("calibration_percentile", 20)),
+        ),
+        inference=InferenceConfig(
+            mode=str(inference.get("mode", "auto")),
+            model_fallback_after_retrieval=bool(inference.get("model_fallback_after_retrieval", True)),
         ),
     )

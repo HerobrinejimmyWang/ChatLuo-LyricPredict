@@ -53,6 +53,59 @@ p {
   color: var(--muted);
 }
 
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(96px, 1fr));
+  gap: 2px;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.mode-switch label {
+  display: block;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.mode-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mode-switch span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mode-switch input:checked + span {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.mode-switch input:focus-visible + span {
+  outline: 2px solid rgba(31, 122, 104, 0.25);
+  outline-offset: 2px;
+}
+
 .file-button input {
   display: none;
 }
@@ -105,6 +158,12 @@ label,
   justify-content: space-between;
   color: var(--muted);
   font-size: 14px;
+}
+
+.mode-readout {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 textarea {
@@ -163,6 +222,15 @@ textarea:focus {
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .topbar-controls {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .mode-switch {
+    flex: 1 1 220px;
   }
 
   .editor-pane,

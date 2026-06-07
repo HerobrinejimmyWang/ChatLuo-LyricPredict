@@ -3,8 +3,28 @@ const contextInput = document.querySelector("#contextInput");
 const outputText = document.querySelector("#outputText");
 const statusText = document.querySelector("#statusText");
 const confidenceText = document.querySelector("#confidenceText");
+const modeText = document.querySelector("#modeText");
 const predictButton = document.querySelector("#predictButton");
 const continueButton = document.querySelector("#continueButton");
+const modeInputs = Array.from(document.querySelectorAll("input[name='mode']"));
+
+const MODE_LABELS = {
+  "model-only": "Model-only",
+  retrieval: "Retrieval-enhanced",
+};
+
+function getMode() {
+  return modeInputs.find((input) => input.checked)?.value || "model-only";
+}
+
+function setMode(mode) {
+  const nextMode = MODE_LABELS[mode] ? mode : "model-only";
+  modeInputs.forEach((input) => {
+    input.checked = input.value === nextMode;
+  });
+  modeText.textContent = MODE_LABELS[nextMode];
+  localStorage.setItem("lyricpredict.mode", nextMode);
+}
 
 function setStatus(text, lowConfidence = false) {
   statusText.textContent = text;
@@ -12,7 +32,7 @@ function setStatus(text, lowConfidence = false) {
 }
 
 function appendAccepted(text) {
-  const separator = contextInput.value && !contextInput.value.endsWith("\n") ? "\n" : "";
+  const separator = contextInput.value && !/[\n,，.。]$/.test(contextInput.value) && !/^[,，.。]/.test(text) ? "\n" : "";
   contextInput.value = `${contextInput.value}${separator}${text}`;
   outputText.textContent = contextInput.value;
 }
@@ -48,10 +68,11 @@ async function predictNext() {
   predictButton.disabled = true;
   continueButton.disabled = true;
   try {
+    const mode = getMode();
     const response = await fetch("/api/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context, continue: true }),
+      body: JSON.stringify({ context, continue: true, mode }),
     });
     if (!response.ok) {
       const error = await response.text();
@@ -64,7 +85,7 @@ async function predictNext() {
       return;
     }
     appendAccepted(result.text);
-    setStatus("Accepted");
+    setStatus(`Accepted: ${MODE_LABELS[mode]}`);
   } finally {
     predictButton.disabled = false;
     continueButton.disabled = false;
@@ -73,6 +94,10 @@ async function predictNext() {
 
 fileInput.addEventListener("change", () => {
   importLyrics().catch((error) => setStatus(error.message, true));
+});
+
+modeInputs.forEach((input) => {
+  input.addEventListener("change", () => setMode(input.value));
 });
 
 predictButton.addEventListener("click", () => {
@@ -90,3 +115,5 @@ window.addEventListener("keydown", (event) => {
     predictNext().catch((error) => setStatus(error.message, true));
   }
 });
+
+setMode(localStorage.getItem("lyricpredict.mode") || "model-only");

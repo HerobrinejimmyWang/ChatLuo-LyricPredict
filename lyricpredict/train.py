@@ -33,6 +33,18 @@ def ensure_training_terminator(line: str) -> str:
     return line if line.endswith(TERMINATORS) else f"{line}。"
 
 
+def join_training_lines(lines: list[str]) -> str:
+    pieces: list[str] = []
+    for line in lines:
+        if not pieces:
+            pieces.append(line)
+            continue
+        separator = "" if pieces[-1].endswith(TERMINATORS) or line.startswith(TERMINATORS) else "，"
+        pieces.append(f"{separator}{line}")
+    text = "".join(pieces)
+    return ensure_training_terminator(text)
+
+
 class TextBlockDataset:
     def __init__(
         self,
@@ -48,7 +60,7 @@ class TextBlockDataset:
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         if not text.strip():
             raise ValueError(f"No training text found in {path}. Run prepare first.")
-        encoded: list[int] = []
+        kept_text_lines: list[str] = []
         self.total_lines = 0
         self.kept_lines = 0
         self.skipped_lines = 0
@@ -61,7 +73,8 @@ class TextBlockDataset:
                 self.skipped_lines += 1
                 continue
             self.kept_lines += 1
-            encoded.extend(tokenizer.encode(ensure_training_terminator(line), add_special_tokens=False))
+            kept_text_lines.append(line)
+        encoded = tokenizer.encode(join_training_lines(kept_text_lines), add_special_tokens=False)
         self.examples = []
         for index in range(0, max(1, len(encoded) - 1), block_size):
             block = encoded[index : index + block_size]
