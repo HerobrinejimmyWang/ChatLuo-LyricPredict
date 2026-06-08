@@ -4,26 +4,57 @@ const outputText = document.querySelector("#outputText");
 const statusText = document.querySelector("#statusText");
 const confidenceText = document.querySelector("#confidenceText");
 const modeText = document.querySelector("#modeText");
+const correctionText = document.querySelector("#correctionText");
 const predictButton = document.querySelector("#predictButton");
 const continueButton = document.querySelector("#continueButton");
 const modeInputs = Array.from(document.querySelectorAll("input[name='mode']"));
+const strictnessInputs = Array.from(document.querySelectorAll("input[name='strictness']"));
+const correctionInput = document.querySelector("#correctionInput");
 
 const MODE_LABELS = {
+  auto: "Auto",
   "model-only": "Model-only",
-  retrieval: "Retrieval-enhanced",
+};
+
+const STRICTNESS_LABELS = {
+  strict: "Strict",
+  balanced: "Balanced",
+  tolerant: "Tolerant",
 };
 
 function getMode() {
-  return modeInputs.find((input) => input.checked)?.value || "model-only";
+  return modeInputs.find((input) => input.checked)?.value || "auto";
 }
 
 function setMode(mode) {
-  const nextMode = MODE_LABELS[mode] ? mode : "model-only";
+  const nextMode = MODE_LABELS[mode] ? mode : "auto";
   modeInputs.forEach((input) => {
     input.checked = input.value === nextMode;
   });
-  modeText.textContent = MODE_LABELS[nextMode];
+  updateReadout();
   localStorage.setItem("lyricpredict.mode", nextMode);
+}
+
+function getStrictness() {
+  return strictnessInputs.find((input) => input.checked)?.value || "balanced";
+}
+
+function setStrictness(strictness) {
+  const nextStrictness = STRICTNESS_LABELS[strictness] ? strictness : "balanced";
+  strictnessInputs.forEach((input) => {
+    input.checked = input.value === nextStrictness;
+  });
+  updateReadout();
+  localStorage.setItem("lyricpredict.strictness", nextStrictness);
+}
+
+function setCorrection(enabled) {
+  correctionInput.checked = Boolean(enabled);
+  localStorage.setItem("lyricpredict.correction", correctionInput.checked ? "true" : "false");
+}
+
+function updateReadout() {
+  modeText.textContent = `${MODE_LABELS[getMode()]} / ${STRICTNESS_LABELS[getStrictness()]}`;
 }
 
 function setStatus(text, lowConfidence = false) {
@@ -31,9 +62,19 @@ function setStatus(text, lowConfidence = false) {
   statusText.classList.toggle("low-confidence", lowConfidence);
 }
 
+function normalizeBoundary(current, text) {
+  let nextText = text.trim().replace(/([,.，。])\1+/g, "$1");
+  if (/[,，.。]$/.test(current.trim()) && /^[,，.。]/.test(nextText)) {
+    nextText = nextText.replace(/^[,，.。]+/, "").trim();
+  }
+  return nextText;
+}
+
 function appendAccepted(text) {
-  const separator = contextInput.value && !/[\n,，.。]$/.test(contextInput.value) && !/^[,，.。]/.test(text) ? "\n" : "";
-  contextInput.value = `${contextInput.value}${separator}${text}`;
+  const current = contextInput.value;
+  const nextText = normalizeBoundary(current, text);
+  const separator = current && !/[\n,，.。]$/.test(current) && !/^[,，.。]/.test(nextText) ? "\n" : "";
+  contextInput.value = `${current}${separator}${nextText}`;
   outputText.textContent = contextInput.value;
 }
 
@@ -69,10 +110,12 @@ async function predictNext() {
   continueButton.disabled = true;
   try {
     const mode = getMode();
+    const strictness = getStrictness();
+    const correction = correctionInput.checked;
     const response = await fetch("/api/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context, continue: true, mode }),
+      body: JSON.stringify({ context, continue: true, mode, strictness, correction }),
     });
     if (!response.ok) {
       const error = await response.text();
@@ -84,8 +127,14 @@ async function predictNext() {
       setStatus(`No output: ${result.reason}`, true);
       return;
     }
+    if (result.corrected_context) {
+      contextInput.value = result.corrected_context;
+      correctionText.textContent = `Corrected context: ${result.corrected_context}`;
+    } else {
+      correctionText.textContent = "";
+    }
     appendAccepted(result.text);
-    setStatus(`Accepted: ${MODE_LABELS[mode]}`);
+    setStatus(`Accepted: ${MODE_LABELS[mode]} / ${STRICTNESS_LABELS[getStrictness()]}`);
   } finally {
     predictButton.disabled = false;
     continueButton.disabled = false;
@@ -99,6 +148,12 @@ fileInput.addEventListener("change", () => {
 modeInputs.forEach((input) => {
   input.addEventListener("change", () => setMode(input.value));
 });
+
+strictnessInputs.forEach((input) => {
+  input.addEventListener("change", () => setStrictness(input.value));
+});
+
+correctionInput.addEventListener("change", () => setCorrection(correctionInput.checked));
 
 predictButton.addEventListener("click", () => {
   outputText.textContent = contextInput.value;
@@ -116,4 +171,6 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-setMode(localStorage.getItem("lyricpredict.mode") || "model-only");
+setMode(localStorage.getItem("lyricpredict.mode") || "auto");
+setStrictness(localStorage.getItem("lyricpredict.strictness") || "balanced");
+setCorrection(localStorage.getItem("lyricpredict.correction") === "true");

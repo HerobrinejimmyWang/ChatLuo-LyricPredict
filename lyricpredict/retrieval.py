@@ -22,11 +22,37 @@ class RetrievalResult:
     text: str
     confidence: float
     reason: str
+    corrected_context: str | None = None
 
 
 def _key(text: str) -> str:
     text = SPACE_RE.sub("", text.lower())
     return PUNCT_RE.sub("", text)
+
+
+def _key_positions(text: str) -> list[int]:
+    positions: list[int] = []
+    for index, char in enumerate(text):
+        if _key(char):
+            positions.append(index)
+    return positions
+
+
+def _correct_context_suffix(context: str, corrected_suffix: str, matched_key_length: int) -> str | None:
+    positions = _key_positions(context)
+    corrected_key = _key(corrected_suffix)
+    if len(positions) < matched_key_length or len(corrected_key) != matched_key_length:
+        return None
+    start = positions[-matched_key_length]
+    end = positions[-1] + 1
+    suffix_chars = list(context[start:end])
+    key_index = 0
+    for index, char in enumerate(suffix_chars):
+        if _key(char):
+            suffix_chars[index] = corrected_key[key_index]
+            key_index += 1
+    corrected = f"{context[:start]}{''.join(suffix_chars)}{context[end:]}"
+    return corrected if corrected != context else None
 
 
 def _cut_at_terminator(text: str) -> str:
@@ -145,14 +171,25 @@ class LyricRetriever:
         self._songs = songs
         return songs
 
-    def _format_next_text(self, context: str, next_text: str) -> RetrievalResult:
+    def _format_next_text(
+        self,
+        context: str,
+        next_text: str,
+        corrected_context: str | None = None,
+    ) -> RetrievalResult:
         next_text = _cut_at_terminator(next_text)
         prefix = "" if context.rstrip().endswith(TERMINATORS) or next_text.startswith(TERMINATORS) else "，"
-        return RetrievalResult(text=f"{prefix}{next_text}", confidence=0.92, reason="retrieval")
+        return RetrievalResult(
+            text=f"{prefix}{next_text}",
+            confidence=0.92,
+            reason="retrieval",
+            corrected_context=corrected_context,
+        )
 
     def _find_intra_line_continuation(self, context: str, context_key: str) -> RetrievalResult | None:
         direct_matches: dict[str, int] = {}
         matches: dict[str, int] = {}
+        corrections: dict[str, str | None] = {}
         best_score: tuple[int, int] = (0, 999)
         for song in self._load_songs():
             lines = [line.strip() for line in song.lines if _is_usable_line(line)]
@@ -181,9 +218,14 @@ class LyricRetriever:
                             continue
                         if score[0] > best_score[0] or (score[0] == best_score[0] and score[1] < best_score[1]):
                             matches = {}
+                            corrections = {}
                             best_score = score
                         if score == best_score:
                             matches[next_text] = matches.get(next_text, 0) + 1
+                            corrected_source = "".join(lines[start:line_index]) + prefix_part
+                            corrections[next_text] = (
+                                _correct_context_suffix(context, corrected_source, score[0]) if score[1] > 0 else None
+                            )
 
         if direct_matches:
             if len(direct_matches) > 1:
@@ -191,7 +233,8 @@ class LyricRetriever:
             return RetrievalResult(text=next(iter(direct_matches)), confidence=0.92, reason="retrieval")
         if not matches or len(matches) > 1:
             return None
-        return self._format_next_text(context, next(iter(matches)))
+        next_text = next(iter(matches))
+        return self._format_next_text(context, next_text, corrections.get(next_text))
 
     def find_next_line(self, context: str) -> RetrievalResult | None:
         context_key = _key(context)
@@ -199,6 +242,7 @@ class LyricRetriever:
             return None
 
         matches: dict[str, int] = {}
+        corrections: dict[str, str | None] = {}
         best_score: tuple[int, int] = (0, 999)
         for song in self._load_songs():
             lines = [line.strip() for line in song.lines if _is_usable_line(line)]
@@ -217,10 +261,15 @@ class LyricRetriever:
                         continue
                     if score[0] > best_score[0] or (score[0] == best_score[0] and score[1] < best_score[1]):
                         matches = {}
+                        corrections = {}
                         ordered_matches = []
                         best_score = score
                     if score == best_score:
                         matches[next_line] = matches.get(next_line, 0) + 1
+                        corrected_source = "".join(lines[start:next_index])
+                        corrections[next_line] = (
+                            _correct_context_suffix(context, corrected_source, score[0]) if score[1] > 0 else None
+                        )
                         ordered_matches.append(next_line)
 
         if not matches:
@@ -229,11 +278,21 @@ class LyricRetriever:
             if best_score[0] < 24 or len(context_key) - best_score[0] > 4:
                 return None
             next_line = ordered_matches[-1]
-            result = self._format_next_text(context, next_line)
+            result = self._format_next_text(context, next_line, corrections.get(next_line))
             confidence = min(0.9, 0.5 + best_score[0] / 90 - best_score[1] * 0.04)
-            return RetrievalResult(text=result.text, confidence=confidence, reason=result.reason)
+            return RetrievalResult(
+                text=result.text,
+                confidence=confidence,
+                reason=result.reason,
+                corrected_context=result.corrected_context,
+            )
 
         next_line = next(iter(matches))
         confidence = min(0.99, 0.5 + best_score[0] / 80 - best_score[1] * 0.04)
-        result = self._format_next_text(context, next_line)
-        return RetrievalResult(text=result.text, confidence=confidence, reason=result.reason)
+        result = self._format_next_text(context, next_line, corrections.get(next_line))
+        return RetrievalResult(
+            text=result.text,
+            confidence=confidence,
+            reason=result.reason,
+            corrected_context=result.corrected_context,
+        )

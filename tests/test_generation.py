@@ -1,4 +1,4 @@
-from lyricpredict.generation import cut_at_terminator, token_count_for_text
+from lyricpredict.generation import cut_at_terminator, normalize_prediction_boundary, token_count_for_text
 
 
 def test_cut_at_chinese_terminator_keeps_mark():
@@ -19,3 +19,11 @@ def test_cut_without_terminator_marks_unfinished():
 
 def test_token_count_for_cut_text():
     assert token_count_for_text(["月", "光", "，", "后"], "月光，") == 3
+
+
+def test_normalize_prediction_boundary_removes_duplicate_separator():
+    assert normalize_prediction_boundary("未来的你会光芒万丈，", "，而我也曾是你万分之一的光") == "而我也曾是你万分之一的光"
+
+
+def test_normalize_prediction_boundary_collapses_repeated_leading_separator():
+    assert normalize_prediction_boundary("未来的你会光芒万丈", "，，而我也曾是你万分之一的光") == "，而我也曾是你万分之一的光"

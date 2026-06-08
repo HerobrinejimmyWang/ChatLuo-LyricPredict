@@ -41,7 +41,7 @@ def make_config(tmp_path: Path) -> AppConfig:
             max_repeat_ratio=0.5,
             calibration_percentile=20,
         ),
-        inference=InferenceConfig(mode="model-only", model_fallback_after_retrieval=True),
+        inference=InferenceConfig(mode="model-only", model_fallback_after_retrieval=True, strictness="balanced"),
     )
 
 
@@ -74,3 +74,50 @@ def test_model_only_abstains_when_exported_artifact_misses(tmp_path, monkeypatch
 
     assert not prediction.accepted
     assert prediction.reason == "no_model_match"
+
+
+def test_model_only_can_return_corrected_context_when_enabled(tmp_path):
+    config = make_config(tmp_path)
+    ngram = CharNGramModel.train(
+        [CleanedSong(source="song", lines=["不论这世界多糟糕，未来的你会光芒万丈", "而我也曾是你万分之一的光"])],
+        order=16,
+    )
+    ngram.save(config.paths.model_dir / "ngram_model.json")
+
+    generator = LyricGenerator(config, mode="model-only")
+    without_correction = generator.predict("不论这世界多糟糕，未来的你会光茫万丈", correction=False)
+    with_correction = generator.predict("不论这世界多糟糕，未来的你会光茫万丈", correction=True)
+
+    assert without_correction.accepted
+    assert without_correction.corrected_context is None
+    assert with_correction.accepted
+    assert with_correction.corrected_context == "不论这世界多糟糕，未来的你会光芒万丈"
+
+
+def test_strictness_parameter_is_accepted_by_generator(tmp_path):
+    config = make_config(tmp_path)
+    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["三人行，必有我师焉。"])], order=8, min_context=2)
+    ngram.save(config.paths.model_dir / "ngram_model.json")
+
+    prediction = LyricGenerator(config, mode="model-only").predict("三人行，", strictness="tolerant")
+
+    assert prediction.accepted
+
+
+def test_auto_retrieval_can_return_corrected_context_when_enabled(tmp_path):
+    config = make_config(tmp_path)
+    extra_dir = config.paths.processed_dir.parent.parent / "selflyricdata"
+    extra_dir.mkdir()
+    (extra_dir / "song.lrc").write_text(
+        "[00:01.00]未来的你会光芒万丈\n[00:02.00]而我也曾是你万分之一的光",
+        encoding="utf-8",
+    )
+
+    prediction = LyricGenerator(config, mode="auto").predict(
+        "未来的你会光茫万丈",
+        correction=True,
+    )
+
+    assert prediction.accepted
+    assert prediction.reason == "retrieval"
+    assert prediction.corrected_context == "未来的你会光芒万丈"

@@ -67,6 +67,7 @@ def test_retriever_allows_small_typo_in_long_context(tmp_path):
 
     assert result is not None
     assert result.text == "，而我也曾是你万分之一的光"
+    assert result.corrected_context == "未来的你会光芒万丈"
 
 
 def test_retriever_rejects_non_contiguous_suffix_match(tmp_path):

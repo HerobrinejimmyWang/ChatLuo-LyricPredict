@@ -14,6 +14,7 @@ TERMINATORS = (",", ".", "，", "。")
 CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,，.。])")
 SPACE_AFTER_PUNCT_RE = re.compile(r"([,，.。])\s+")
+REPEATED_TERMINATOR_RE = re.compile(r"([,.，。])\1+")
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,46 @@ class Prediction:
     accepted: bool
     confidence: float
     reason: str
+    corrected_context: str | None = None
+
+
+@dataclass(frozen=True)
+class StrictnessPolicy:
+    name: str
+    threshold_delta: float = 0.0
+    min_token_probability_scale: float = 1.0
+    max_repeat_ratio_delta: float = 0.0
+    allow_fuzzy: bool = True
+    fuzzy_error_scale: float = 1.0
+    allow_transformer_fallback: bool = False
+
+
+STRICTNESS_POLICIES = {
+    "strict": StrictnessPolicy(
+        name="strict",
+        threshold_delta=0.08,
+        min_token_probability_scale=1.5,
+        max_repeat_ratio_delta=-0.10,
+        allow_fuzzy=True,
+        fuzzy_error_scale=0.7,
+        allow_transformer_fallback=False,
+    ),
+    "balanced": StrictnessPolicy(name="balanced"),
+    "tolerant": StrictnessPolicy(
+        name="tolerant",
+        threshold_delta=-0.03,
+        min_token_probability_scale=0.5,
+        max_repeat_ratio_delta=0.15,
+        allow_fuzzy=True,
+        fuzzy_error_scale=1.5,
+        allow_transformer_fallback=True,
+    ),
+}
+
+
+def normalize_strictness(strictness: str | None, default: str = "balanced") -> str:
+    value = (strictness or default).replace("_", "-").lower()
+    return value if value in STRICTNESS_POLICIES else "balanced"
 
 
 def cut_at_terminator(text: str) -> tuple[str, bool]:
@@ -32,6 +73,13 @@ def cut_at_terminator(text: str) -> tuple[str, bool]:
         return text.strip(), False
     end = min(positions) if has_leading_terminator else min(positions) + 1
     return text[:end].strip(), True
+
+
+def normalize_prediction_boundary(context: str, text: str) -> str:
+    text = REPEATED_TERMINATOR_RE.sub(r"\1", text.strip())
+    if context.rstrip()[-1:] in TERMINATORS and text[:1] in TERMINATORS:
+        return text.lstrip("".join(TERMINATORS)).strip()
+    return text
 
 
 def token_count_for_text(token_pieces: list[str], target_text: str) -> int:
@@ -92,7 +140,7 @@ class LyricGenerator:
             min_token_probability=config.confidence.min_token_probability,
             max_repeat_ratio=config.confidence.max_repeat_ratio,
         )
-        self.confidence_gate = ConfidenceGate(load_confidence_settings(config.paths.model_dir, defaults))
+        self.confidence_settings = load_confidence_settings(config.paths.model_dir, defaults)
         root_dir = config.paths.processed_dir.parent.parent
         self.retriever = LyricRetriever(config.paths.processed_dir, extra_dirs=(root_dir / "selflyricdata",))
         self.ngram_model: CharNGramModel | None | bool = False
@@ -139,7 +187,21 @@ class LyricGenerator:
             self.ngram_model = CharNGramModel.load(self.config.paths.model_dir / "ngram_model.json")
         return self.ngram_model
 
-    def predict(self, context: str) -> Prediction:
+    def _policy(self, strictness: str | None = None) -> StrictnessPolicy:
+        name = normalize_strictness(strictness, self.config.inference.strictness)
+        return STRICTNESS_POLICIES[name]
+
+    def _confidence_gate(self, policy: StrictnessPolicy) -> ConfidenceGate:
+        settings = ConfidenceSettings(
+            threshold=max(0.0, min(1.0, self.confidence_settings.threshold + policy.threshold_delta)),
+            min_token_probability=max(0.0, self.confidence_settings.min_token_probability * policy.min_token_probability_scale),
+            max_repeat_ratio=max(0.0, min(1.0, self.confidence_settings.max_repeat_ratio + policy.max_repeat_ratio_delta)),
+        )
+        return ConfidenceGate(settings)
+
+    def predict(self, context: str, strictness: str | None = None, correction: bool = False) -> Prediction:
+        policy = self._policy(strictness)
+        confidence_gate = self._confidence_gate(policy)
         context = context.strip()
         if not context:
             return Prediction("", False, 0.0, "empty_context")
@@ -147,29 +209,51 @@ class LyricGenerator:
         if self.mode in {"auto", "retrieval"}:
             retrieved = self.retriever.find_next_line(lyric_context)
             if retrieved is not None:
-                return Prediction(retrieved.text, True, retrieved.confidence, retrieved.reason)
+                corrected_context = retrieved.corrected_context if correction else None
+                boundary_context = corrected_context or lyric_context
+                return Prediction(
+                    normalize_prediction_boundary(boundary_context, retrieved.text),
+                    True,
+                    retrieved.confidence,
+                    retrieved.reason,
+                    corrected_context,
+                )
             if self.mode == "retrieval" or not self.model_fallback_after_retrieval:
                 return Prediction("", False, 0.0, "no_retrieval_match")
         ngram_model = self.load_ngram_model()
         if ngram_model is not None:
-            ngram_prediction = ngram_model.predict(lyric_context, max_chars=self.config.model.max_new_tokens)
+            ngram_prediction = ngram_model.predict(
+                lyric_context,
+                max_chars=self.config.model.max_new_tokens,
+                allow_fuzzy=policy.allow_fuzzy,
+                fuzzy_error_scale=policy.fuzzy_error_scale,
+            )
             if ngram_prediction is not None:
-                result = self.confidence_gate.evaluate(ngram_prediction.text, [ngram_prediction.confidence], True)
+                result = confidence_gate.evaluate(ngram_prediction.text, [ngram_prediction.confidence], True)
                 if result.accepted:
-                    return Prediction(ngram_prediction.text, True, ngram_prediction.confidence, ngram_prediction.reason)
-            return Prediction("", False, 0.0, "no_model_match")
+                    corrected_context = ngram_prediction.corrected_context if correction else None
+                    boundary_context = corrected_context or lyric_context
+                    return Prediction(
+                        normalize_prediction_boundary(boundary_context, ngram_prediction.text),
+                        True,
+                        ngram_prediction.confidence,
+                        ngram_prediction.reason,
+                        corrected_context,
+                    )
+            if not policy.allow_transformer_fallback:
+                return Prediction("", False, 0.0, "no_model_match")
         self.load()
         best_rejection = Prediction("", False, 0.0, "no_attempt")
         attempts = max(1, self.config.model.generation_attempts)
         for _ in range(attempts):
-            prediction = self._predict_loaded(lyric_context)
+            prediction = self._predict_loaded(lyric_context, confidence_gate)
             if prediction.accepted:
                 return prediction
             if prediction.confidence >= best_rejection.confidence:
                 best_rejection = prediction
         return best_rejection
 
-    def _predict_loaded(self, context: str) -> Prediction:
+    def _predict_loaded(self, context: str, confidence_gate: ConfidenceGate) -> Prediction:
         import torch
 
         assert self.model is not None
@@ -212,7 +296,7 @@ class LyricGenerator:
             probs = torch.softmax(output.scores[step][0].detach().cpu(), dim=-1)
             probabilities.append(float(probs[token_id]))
 
-        result: ConfidenceResult = self.confidence_gate.evaluate(cut_text, probabilities, ended)
+        result: ConfidenceResult = confidence_gate.evaluate(cut_text, probabilities, ended)
         if not result.accepted:
             return Prediction("", False, result.confidence, result.reason)
-        return Prediction(cut_text, True, result.confidence, result.reason)
+        return Prediction(normalize_prediction_boundary(context, cut_text), True, result.confidence, result.reason)

@@ -34,3 +34,35 @@ def test_char_ngram_rejects_long_context_when_only_short_suffix_matches():
     model = CharNGramModel.train(songs, order=16)
 
     assert model.predict("有情人自古，不在乎天地之间有几多险阻，这天上地下唯一的脚步") is None
+
+
+def test_char_ngram_fuzzy_suffix_recovers_single_typo():
+    songs = [CleanedSong(source="song", lines=["不论这世界多糟糕，未来的你会光芒万丈", "而我也曾是你万分之一的光"])]
+    model = CharNGramModel.train(songs, order=16)
+
+    prediction = model.predict("不论这世界多糟糕，未来的你会光茫万丈")
+
+    assert prediction is not None
+    assert prediction.text == "，而我也曾是你万分之一的光"
+    assert prediction.reason == "char_ngram_fuzzy"
+    assert prediction.corrected_context == "不论这世界多糟糕，未来的你会光芒万丈"
+
+
+def test_char_ngram_fuzzy_rejects_ambiguous_continuations():
+    songs = [
+        CleanedSong(source="song-a", lines=["不论这世界多糟糕，未来的你会光芒万丈", "第一种答案"]),
+        CleanedSong(source="song-b", lines=["不论这世界多糟糕，未来的你会光芒万丈", "第二种答案"]),
+    ]
+    model = CharNGramModel.train(songs, order=16)
+
+    assert model.predict("不论这世界多糟糕，未来的你会光茫万丈") is None
+
+
+def test_char_ngram_supports_short_context_for_non_lyric_tasks():
+    songs = [CleanedSong(source="quotes", lines=["三人行，必有我师焉。"])]
+    model = CharNGramModel.train(songs, order=8, min_context=2)
+
+    prediction = model.predict("三人行，")
+
+    assert prediction is not None
+    assert prediction.text == "必有我师焉"

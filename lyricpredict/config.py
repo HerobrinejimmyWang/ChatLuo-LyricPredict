@@ -50,6 +50,7 @@ class ConfidenceConfig:
 class InferenceConfig:
     mode: str
     model_fallback_after_retrieval: bool
+    strictness: str
 
 
 @dataclass(frozen=True)
@@ -124,5 +125,6 @@ def load_config(config_path: str | Path = "configs/default.yaml") -> AppConfig:
         inference=InferenceConfig(
             mode=str(inference.get("mode", "auto")),
             model_fallback_after_retrieval=bool(inference.get("model_fallback_after_retrieval", True)),
+            strictness=str(inference.get("strictness", "balanced")),
         ),
     )

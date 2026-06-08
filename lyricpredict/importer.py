@@ -55,6 +55,15 @@ def prepare_dataset(raw_dir: Path, processed_dir: Path, validation_ratio: float 
     processed_dir.mkdir(parents=True, exist_ok=True)
     songs = [clean_lyrics_file(path) for path in iter_lyric_files(raw_dir)]
     songs = [song for song in songs if song.lines]
+    deduped_songs: list[CleanedSong] = []
+    seen_song_texts: set[str] = set()
+    for song in songs:
+        signature = "\n".join(line.strip().lower() for line in song.lines if line.strip())
+        if signature in seen_song_texts:
+            continue
+        seen_song_texts.add(signature)
+        deduped_songs.append(song)
+    songs = deduped_songs
     all_lines = [line for song in songs for line in song.lines]
 
     split_at = max(1, int(len(all_lines) * (1 - validation_ratio))) if all_lines else 0

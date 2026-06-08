@@ -20,6 +20,8 @@ class PredictRequest(BaseModel):
     context: str = Field(min_length=1)
     continue_: bool = Field(default=True, alias="continue")
     mode: str | None = None
+    strictness: str | None = None
+    correction: bool = False
 
 
 class PredictResponse(BaseModel):
@@ -27,6 +29,7 @@ class PredictResponse(BaseModel):
     accepted: bool
     confidence: float
     reason: str
+    corrected_context: str | None = None
 
 
 def create_app(config_path: str | Path | None = None) -> FastAPI:
@@ -64,12 +67,17 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
 
     @app.post("/api/predict", response_model=PredictResponse)
     async def predict(request: PredictRequest):
-        prediction = get_generator(request.mode).predict(request.context)
+        prediction = get_generator(request.mode).predict(
+            request.context,
+            strictness=request.strictness,
+            correction=request.correction,
+        )
         return PredictResponse(
             text=prediction.text,
             accepted=prediction.accepted,
             confidence=prediction.confidence,
             reason=prediction.reason,
+            corrected_context=prediction.corrected_context,
         )
 
     web_dir = config.paths.web_dir

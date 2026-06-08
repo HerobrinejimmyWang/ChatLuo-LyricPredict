@@ -34,3 +34,4 @@ confidence:
 inference:
   mode: auto
   model_fallback_after_retrieval: true
+  strictness: balanced

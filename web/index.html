@@ -17,14 +17,32 @@
           <div class="topbar-controls">
             <fieldset class="mode-switch" aria-label="Inference mode">
               <label>
+                <input type="radio" name="mode" value="auto" />
+                <span>Auto</span>
+              </label>
+              <label>
                 <input type="radio" name="mode" value="model-only" />
                 <span>Model</span>
               </label>
+            </fieldset>
+            <fieldset class="mode-switch strictness-switch" aria-label="Output strictness">
               <label>
-                <input type="radio" name="mode" value="retrieval" />
-                <span>Retrieval</span>
+                <input type="radio" name="strictness" value="strict" />
+                <span>Strict</span>
+              </label>
+              <label>
+                <input type="radio" name="strictness" value="balanced" />
+                <span>Balanced</span>
+              </label>
+              <label>
+                <input type="radio" name="strictness" value="tolerant" />
+                <span>Tolerant</span>
               </label>
             </fieldset>
+            <label class="toggle-control">
+              <input id="correctionInput" type="checkbox" />
+              <span>Correct</span>
+            </label>
             <label class="file-button">
               <input id="fileInput" type="file" accept=".txt,.lrc" multiple />
               <span>Import</span>
@@ -48,6 +66,7 @@
               <span id="confidenceText">--</span>
             </div>
             <div id="modeText" class="mode-readout">Model-only</div>
+            <div id="correctionText" class="mode-readout"></div>
             <div id="outputText" class="output-text"></div>
           </div>
         </section>

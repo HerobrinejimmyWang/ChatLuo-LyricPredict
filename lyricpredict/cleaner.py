@@ -9,6 +9,16 @@ LRC_TIME_RE = re.compile(r"\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]")
 LRC_META_RE = re.compile(r"^\[(?:ar|al|ti|au|by|offset|length|re|ve):.*\]$", re.IGNORECASE)
 BRACKET_ONLY_RE = re.compile(r"^\[[^\]]+\]$")
 SPACE_RE = re.compile(r"[ \t\u3000]+")
+CREDIT_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"作词|作曲|编曲|调声|调教|吉他|贝斯|鼓|弦乐|钢琴|混音|母带|录音|和声|"
+    r"制作人|监制人|监制|音乐监制|出品人|出品|发行|版权|曲绘|视频|策划|协力|"
+    r"Lyricist|Lyrics?|Composer|Arrangement?|Arrange|Tuning|Vocaloid\s*Editor|"
+    r"Guitar|Bass|Drums?|Piano|Mix(?:ing)?|Master(?:ing)?|Recording|Producer|"
+    r"Executive\s+Producer|Music\s+Supervisor|Publisher|Copyright"
+    r")(?:\b|(?=\s|制作))(?:\s*[^:：]+)?\s*[:：]",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,8 @@ def clean_lrc_line(line: str) -> str | None:
     line = LRC_TIME_RE.sub("", line)
     line = normalize_line(line)
     if not line or BRACKET_ONLY_RE.match(line):
+        return None
+    if CREDIT_LINE_RE.match(line):
         return None
     return line
 
