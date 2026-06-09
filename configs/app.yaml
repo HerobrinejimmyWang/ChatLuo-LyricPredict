@@ -1,0 +1,17 @@
+enabled: true
+mode: auto
+strictness: balanced
+context_window: 32
+read_frequency: sometimes
+correction: true
+include_separator: true
+default_separator: ，
+suggestion_position: top-left
+suggestion_style: luo
+hotkey: Ctrl+Alt+L
+suggestion_timeout_seconds: 12.0
+lyric_config_path: configs/default.yaml
+model_registry_path: configs/models.yaml
+active_model_id: default
+window_x: null
+window_y: null

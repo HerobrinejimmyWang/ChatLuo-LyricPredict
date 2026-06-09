@@ -1,0 +1,28 @@
+name: Luo Tianyi
+reference: reference.png
+box: box.png
+character:
+  source: character.png
+  crop: [0, 0, 760, 430]
+  width: 285
+  anchor: top-left
+  position: [26, 0]
+bubble:
+  background: "#fffefe"
+  border: "#7d6bd6"
+  border_width: 2
+  radius: 18
+  text: "#2a2540"
+  meta: "#6f66a8"
+  rect: [34, 148, -68, 158]
+  text_rect: [320, 0.58h, -382, -62]
+  meta_rect: [320, -52, -382, 24]
+nine_slice:
+  source_size: [1536, 1024]
+  box_size: [960, 340]
+  protected_character: [0, 0, 760, 430]
+  stretch_center: [170, 430, 1260, 420]
+window:
+  default_width: 720
+  pointer_gap: 34
+  margin: 8

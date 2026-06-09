@@ -1,0 +1,13 @@
+active_model: default
+models:
+- id: default
+  name: Default Lyrics
+  config_path: configs/default.yaml
+  model_dir: models/default
+  raw_dir: data/raw
+  processed_dir: data/processed
+  data_dirs:
+  - selfdata/selflyricdata
+  task: lyrics
+  created_at: 0.0
+  updated_at: 0.0

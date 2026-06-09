@@ -1,4 +1,9 @@
-from lyricpredict.generation import cut_at_terminator, normalize_prediction_boundary, token_count_for_text
+from lyricpredict.generation import (
+    context_is_inside_clause,
+    cut_at_terminator,
+    normalize_prediction_boundary,
+    token_count_for_text,
+)
 
 
 def test_cut_at_chinese_terminator_keeps_mark():
@@ -27,3 +32,20 @@ def test_normalize_prediction_boundary_removes_duplicate_separator():
 
 def test_normalize_prediction_boundary_collapses_repeated_leading_separator():
     assert normalize_prediction_boundary("未来的你会光芒万丈", "，，而我也曾是你万分之一的光") == "，而我也曾是你万分之一的光"
+
+
+def test_context_inside_clause_after_existing_separator():
+    assert context_is_inside_clause("我想要我想要你知道，不论")
+    assert not context_is_inside_clause("未来的你会光芒万丈")
+    assert not context_is_inside_clause("未来的你会光芒万丈，")
+    assert not context_is_inside_clause("将故事传颂吧，风携它远追")
+    assert not context_is_inside_clause("未来的你会光芒万丈，而我也曾是你万分之一的光，那么闪耀")
+    assert not context_is_inside_clause("你应该忘记了吧，天气晴朗")
+
+
+def test_normalize_prediction_boundary_removes_separator_inside_clause():
+    assert normalize_prediction_boundary("我想要我想要你知道，不论", "，这世界多糟糕") == "这世界多糟糕"
+
+
+def test_normalize_prediction_boundary_keeps_separator_after_complete_clause():
+    assert normalize_prediction_boundary("将故事传颂吧，风携它远追", "，你脸颊热泪") == "，你脸颊热泪"

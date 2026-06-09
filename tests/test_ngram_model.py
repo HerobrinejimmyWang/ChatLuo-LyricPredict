@@ -58,6 +58,35 @@ def test_char_ngram_fuzzy_rejects_ambiguous_continuations():
     assert model.predict("不论这世界多糟糕，未来的你会光茫万丈") is None
 
 
+def test_char_ngram_uses_long_context_to_disambiguate_repeated_suffix():
+    songs = [
+        CleanedSong(
+            source="song",
+            lines=[
+                "你应该忘记了吧",
+                "天气晴朗",
+                "心里却潮湿的盛夏",
+                "小小的房间里你弹着吉他",
+                "未来的你会光芒万丈",
+                "而我也曾是你万分之一的光",
+                "那么闪耀",
+                "你应该忘记了吧",
+                "天气晴朗",
+                "心里却潮湿的盛夏",
+                "而我还记得你那天写的歌",
+            ],
+        )
+    ]
+    model = CharNGramModel.train(songs, order=32)
+
+    short_prediction = model.predict("心里却潮湿的盛夏")
+    long_prediction = model.predict("那么闪耀，你应该忘记了吧，天气晴朗，心里却潮湿的盛夏")
+
+    assert short_prediction is None
+    assert long_prediction is not None
+    assert long_prediction.text == "，而我还记得你那天写的歌"
+
+
 def test_char_ngram_supports_short_context_for_non_lyric_tasks():
     songs = [CleanedSong(source="quotes", lines=["三人行，必有我师焉。"])]
     model = CharNGramModel.train(songs, order=8, min_context=2)

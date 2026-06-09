@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 REPEATED_CJK_RE = re.compile(r"([\u4e00-\u9fff])\1{3,}")
+HYPHEN_ARTIFACT_RE = re.compile(r"(?:-\s*){3,}")
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,8 @@ class ConfidenceGate:
             return ConfidenceResult(False, 0.0, "empty")
         if "##" in text:
             return ConfidenceResult(False, 0.0, "subword_artifact")
+        if HYPHEN_ARTIFACT_RE.search(text):
+            return ConfidenceResult(False, 0.0, "hyphen_artifact")
         if cjk_count(text) < 2:
             return ConfidenceResult(False, 0.0, "too_little_chinese")
         if REPEATED_CJK_RE.search(text):

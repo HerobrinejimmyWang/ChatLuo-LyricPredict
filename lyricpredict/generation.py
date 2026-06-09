@@ -15,6 +15,22 @@ CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
 SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,，.。])")
 SPACE_AFTER_PUNCT_RE = re.compile(r"([,，.。])\s+")
 REPEATED_TERMINATOR_RE = re.compile(r"([,.，。])\1+")
+INCOMPLETE_CLAUSE_PREFIXES = (
+    "不论",
+    "无论",
+    "不管",
+    "就算",
+    "即使",
+    "哪怕",
+    "如果",
+    "只要",
+    "直到",
+    "当",
+    "等到",
+    "因为",
+    "为了",
+    "还有我",
+)
 
 
 @dataclass(frozen=True)
@@ -75,9 +91,23 @@ def cut_at_terminator(text: str) -> tuple[str, bool]:
     return text[:end].strip(), True
 
 
+def context_is_inside_clause(context: str) -> bool:
+    stripped = context.rstrip()
+    if not stripped or stripped[-1:] in TERMINATORS:
+        return False
+    last_boundary = max(stripped.rfind(mark) for mark in TERMINATORS)
+    if last_boundary < 0:
+        return False
+    suffix = stripped[last_boundary + 1 :].strip()
+    suffix_key = re.sub(r"\s+", "", suffix)
+    if not suffix_key:
+        return False
+    return any(suffix_key.startswith(prefix) for prefix in INCOMPLETE_CLAUSE_PREFIXES)
+
+
 def normalize_prediction_boundary(context: str, text: str) -> str:
     text = REPEATED_TERMINATOR_RE.sub(r"\1", text.strip())
-    if context.rstrip()[-1:] in TERMINATORS and text[:1] in TERMINATORS:
+    if text[:1] in TERMINATORS and (context.rstrip()[-1:] in TERMINATORS or context_is_inside_clause(context)):
         return text.lstrip("".join(TERMINATORS)).strip()
     return text
 
@@ -240,8 +270,9 @@ class LyricGenerator:
                         ngram_prediction.reason,
                         corrected_context,
                     )
-            if not policy.allow_transformer_fallback:
-                return Prediction("", False, 0.0, "no_model_match")
+            return Prediction("", False, 0.0, "no_model_match")
+        if not policy.allow_transformer_fallback:
+            return Prediction("", False, 0.0, "no_model_match")
         self.load()
         best_rejection = Prediction("", False, 0.0, "no_attempt")
         attempts = max(1, self.config.model.generation_attempts)

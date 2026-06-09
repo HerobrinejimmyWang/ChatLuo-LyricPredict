@@ -76,6 +76,21 @@ def test_model_only_abstains_when_exported_artifact_misses(tmp_path, monkeypatch
     assert prediction.reason == "no_model_match"
 
 
+def test_model_only_tolerant_does_not_fallback_when_exported_artifact_misses(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["将故事传颂吧", "风携它远追", "你脸颊热泪"])], order=8)
+    ngram.save(config.paths.model_dir / "ngram_model.json")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("transformer fallback must not be called when exported artifact exists")
+
+    monkeypatch.setattr(LyricGenerator, "load", fail_if_called)
+    prediction = LyricGenerator(config, mode="model-only").predict("完全不相关的上下文", strictness="tolerant")
+
+    assert not prediction.accepted
+    assert prediction.reason == "no_model_match"
+
+
 def test_model_only_can_return_corrected_context_when_enabled(tmp_path):
     config = make_config(tmp_path)
     ngram = CharNGramModel.train(

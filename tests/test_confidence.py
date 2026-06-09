@@ -19,3 +19,11 @@ def test_good_candidate_accepts():
     gate = ConfidenceGate(ConfidenceSettings(threshold=0.2, min_token_probability=0.01, max_repeat_ratio=0.9))
     result = gate.evaluate("一句歌词。", [0.7, 0.7, 0.7, 0.7], ended=True)
     assert result.accepted
+
+
+def test_hyphen_artifact_rejects():
+    gate = ConfidenceGate(ConfidenceSettings(threshold=0.01, min_token_probability=0.0, max_repeat_ratio=0.9))
+    result = gate.evaluate("- - - - 那麼風塵，", [0.8] * 8, ended=True)
+
+    assert not result.accepted
+    assert result.reason == "hyphen_artifact"

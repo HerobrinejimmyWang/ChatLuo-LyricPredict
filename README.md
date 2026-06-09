@@ -50,3 +50,21 @@ python -m lyricpredict.serve --config configs/default.yaml
 ```
 
 Open `http://127.0.0.1:8000`. Use the continue button or `F8` to generate the next sentence.
+
+## Windows Desktop App
+
+The optional Windows shell runs as a tray app with a settings window and a suggestion line. Install the desktop-only dependencies first:
+
+```powershell
+pip install PySide6 pywin32 pyinstaller
+```
+
+Then start it with:
+
+```powershell
+python -m lyricpredict.desktop --settings configs/app.yaml
+```
+
+Use `Ctrl+Alt+L` to read the current selection, `Tab` to accept a suggestion, and `Esc` to reject it. The desktop app reuses `configs/default.yaml` for LyricPredict inference settings and stores desktop preferences in `configs/app.yaml`.
+
+Suggestion styles live under `assets/suggestion_styles`; see `docs/suggestion_style_process.md` for the LUO fused-box workflow and pointer anchoring rules.

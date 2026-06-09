@@ -7,3 +7,9 @@ python-multipart>=0.0.9
 pydantic>=2.7
 pyyaml>=6.0
 pytest>=8.2
+
+# Optional Windows desktop app dependencies:
+# PySide6>=6.7
+# pywin32>=306
+# pyinstaller>=6.0
+# pywinauto>=0.6.9  # optional GUI smoke tests

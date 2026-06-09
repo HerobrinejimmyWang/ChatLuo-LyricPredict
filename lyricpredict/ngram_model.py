@@ -152,7 +152,7 @@ class CharNGramModel:
             return char, len(key)
         return None
 
-    def _continuation_options(self, context: str) -> dict[str, int] | None:
+    def _continuation_match(self, context: str) -> tuple[dict[str, int], int] | None:
         max_length = min(self.order * 3, len(context))
         seen_keys: set[str] = set()
         for length in range(max_length, self.min_context - 1, -1):
@@ -162,8 +162,12 @@ class CharNGramModel:
             seen_keys.add(key)
             options = self.continuations.get(key)
             if options:
-                return options
+                return options, len(_key(key))
         return None
+
+    def _continuation_options(self, context: str) -> dict[str, int] | None:
+        match = self._continuation_match(context)
+        return match[0] if match is not None else None
 
     def _build_normalized_continuation_buckets(self) -> dict[int, dict[str, Counter[str]]]:
         if self._normalized_continuation_buckets is not None:
@@ -330,9 +334,20 @@ class CharNGramModel:
         fuzzy_error_scale: float = 1.0,
     ) -> NGramPrediction | None:
         context = context.strip()
-        options = self._continuation_options(context)
+        continuation_match = self._continuation_match(context)
+        options = continuation_match[0] if continuation_match is not None else None
+        continuation_matched_length = continuation_match[1] if continuation_match is not None else 0
         if options is not None and len(options) > 1:
             return None
+        if options is not None and len(options) == 1:
+            context_key_length = len(_key(context))
+            if context_key_length >= 20 and continuation_matched_length < min(self.order, context_key_length):
+                return None
+            text, count = next(iter(options.items()))
+            text = self._format_continuation(context, text)
+            if text:
+                confidence = min(0.99, 0.70 + min(count, 3) * 0.08)
+                return NGramPrediction(text=text, confidence=confidence, reason="char_ngram")
         generated = []
         matched_lengths = []
         current = context
@@ -377,7 +392,7 @@ class CharNGramModel:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train an exported character n-gram LM for model-only fallback.")
     parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--order", type=int, default=16)
+    parser.add_argument("--order", type=int, default=32)
     parser.add_argument("--min-context", type=int, default=8)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
