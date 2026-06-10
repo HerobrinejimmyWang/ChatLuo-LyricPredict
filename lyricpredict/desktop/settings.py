@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from .auto_read import VALID_AUTO_READ_SCOPES
+
 
 VALID_MODES = {"auto", "model-only"}
 VALID_STRICTNESS = {"strict", "balanced", "tolerant"}
@@ -24,6 +26,8 @@ class AppSettings:
     strictness: str = "balanced"
     context_window: int = 24
     read_frequency: str = "sometimes"
+    auto_read_enabled: bool = False
+    auto_read_scope: str = "used-windows"
     correction: bool = True
     include_separator: bool = True
     default_separator: str = "，"
@@ -55,6 +59,7 @@ def coerce_settings(data: dict[str, Any] | None = None) -> AppSettings:
     mode = str(data.get("mode", AppSettings.mode)).replace("_", "-").lower()
     strictness = str(data.get("strictness", AppSettings.strictness)).lower()
     read_frequency = str(data.get("read_frequency", AppSettings.read_frequency)).lower()
+    auto_read_scope = str(data.get("auto_read_scope", AppSettings.auto_read_scope)).replace("_", "-").lower()
     suggestion_position = str(data.get("suggestion_position", AppSettings.suggestion_position)).replace("_", "-").lower()
     suggestion_style = str(data.get("suggestion_style", AppSettings.suggestion_style)).lower()
     return AppSettings(
@@ -63,6 +68,8 @@ def coerce_settings(data: dict[str, Any] | None = None) -> AppSettings:
         strictness=strictness if strictness in VALID_STRICTNESS else AppSettings.strictness,
         context_window=_clamp_context_window(data.get("context_window", AppSettings.context_window)),
         read_frequency=read_frequency if read_frequency in VALID_FREQUENCIES else AppSettings.read_frequency,
+        auto_read_enabled=bool(data.get("auto_read_enabled", AppSettings.auto_read_enabled)),
+        auto_read_scope=auto_read_scope if auto_read_scope in VALID_AUTO_READ_SCOPES else AppSettings.auto_read_scope,
         correction=bool(data.get("correction", AppSettings.correction)),
         include_separator=bool(data.get("include_separator", AppSettings.include_separator)),
         default_separator=str(data.get("default_separator", AppSettings.default_separator) or AppSettings.default_separator),

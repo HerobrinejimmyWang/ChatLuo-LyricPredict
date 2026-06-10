@@ -6,6 +6,7 @@ from enum import Enum
 
 from lyricpredict.generation import Prediction, TERMINATORS, context_is_inside_clause, normalize_prediction_boundary
 from lyricpredict.retrieval import _key
+from lyricpredict.separators import LEADING_SEPARATOR_CHARS, strip_leading_separators
 
 from .settings import AppSettings
 
@@ -89,11 +90,8 @@ def prediction_to_payload(context: str, prediction: Prediction) -> SuggestionPay
     )
 
 
-LEADING_SEPARATOR_CHARS = "".join(TERMINATORS) + " \t\r\n"
-
-
 def _without_leading_separator(text: str) -> str:
-    return text.lstrip(LEADING_SEPARATOR_CHARS).strip()
+    return strip_leading_separators(text)
 
 
 def _configured_separator(settings: AppSettings) -> str:

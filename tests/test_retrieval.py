@@ -1,4 +1,5 @@
 from lyricpredict.retrieval import LyricRetriever
+from lyricpredict.retrieval import _is_usable_line
 
 
 def write_song(tmp_path, name, lines):
@@ -115,3 +116,12 @@ def test_retriever_allows_one_error_in_short_but_clear_context(tmp_path):
 
     assert result is not None
     assert result.text == "平常的事最值得纪念"
+
+
+def test_retrieval_rejects_credit_metadata_variants_as_unusable():
+    assert not _is_usable_line("VOCALOID调校：某某")
+    assert not _is_usable_line("PV：某某")
+    assert not _is_usable_line("演唱 Vocal：洛天依")
+    assert not _is_usable_line("歌曲PV：av123")
+    assert not _is_usable_line("PV/封面设计：Ansa")
+    assert _is_usable_line("这是一句真正歌词")

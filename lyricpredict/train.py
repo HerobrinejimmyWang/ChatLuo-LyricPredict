@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import load_config
+from .separators import HARD_TERMINATORS, ends_with_separator, starts_with_separator
 
-TERMINATORS = (",", ".", "，", "。")
+TERMINATORS = HARD_TERMINATORS
 
 
 def cjk_count(text: str) -> int:
@@ -39,7 +40,7 @@ def join_training_lines(lines: list[str]) -> str:
         if not pieces:
             pieces.append(line)
             continue
-        separator = "" if pieces[-1].endswith(TERMINATORS) or line.startswith(TERMINATORS) else "，"
+        separator = "" if ends_with_separator(pieces[-1]) or starts_with_separator(line) else "，"
         pieces.append(f"{separator}{line}")
     text = "".join(pieces)
     return ensure_training_terminator(text)

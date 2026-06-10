@@ -9,6 +9,7 @@ from pathlib import Path
 from .cleaner import CleanedSong
 from .config import load_config
 from .retrieval import META_PREFIXES, TERMINATORS, _is_usable_line, _key, _load_processed_songs
+from .separators import ends_with_separator, is_semantic_separator, starts_with_separator, strip_leading_separators
 
 EDGE_QUOTES = "\"'“”‘’"
 
@@ -25,7 +26,7 @@ def _append_with_boundary(pieces: list[str], line: str) -> None:
     if not pieces:
         pieces.append(line)
         return
-    separator = "" if pieces[-1].endswith(TERMINATORS) or line.startswith(TERMINATORS) else "，"
+    separator = "" if ends_with_separator(pieces[-1]) or starts_with_separator(line) else "，"
     pieces.append(f"{separator}{line}")
 
 
@@ -50,7 +51,7 @@ def next_continuation(text: str, start: int, max_chars: int = 80) -> str:
     generated: list[str] = []
     for char in text[start : start + max_chars]:
         generated.append(char)
-        if char in TERMINATORS and _has_cjk("".join(generated)):
+        if is_semantic_separator(char) and _has_cjk("".join(generated)):
             return "".join(generated[:-1]).strip().strip(EDGE_QUOTES)
     return ""
 
@@ -250,19 +251,19 @@ class CharNGramModel:
     @staticmethod
     def _format_continuation(context: str, text: str) -> str:
         text = text.strip().strip(EDGE_QUOTES)
-        if context.rstrip()[-1:] in TERMINATORS:
-            return text.lstrip("".join(TERMINATORS)).strip().strip(EDGE_QUOTES)
+        if ends_with_separator(context):
+            return strip_leading_separators(text).strip(EDGE_QUOTES)
         return text
 
     @staticmethod
     def _choose_formatted_continuation(options: Counter[str], context: str) -> dict[str, int]:
         if not options:
             return {}
-        context_ends_at_boundary = context.rstrip()[-1:] in TERMINATORS
+        context_ends_at_boundary = ends_with_separator(context)
 
         def rank(item: tuple[str, int]) -> tuple[int, int, str]:
             text, count = item
-            starts_at_boundary = text[:1] in TERMINATORS
+            starts_at_boundary = starts_with_separator(text)
             boundary_score = int(not starts_at_boundary) if context_ends_at_boundary else int(starts_at_boundary)
             return count, boundary_score, text
 

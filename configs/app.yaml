@@ -2,7 +2,9 @@ enabled: true
 mode: auto
 strictness: balanced
 context_window: 32
-read_frequency: sometimes
+read_frequency: often
+auto_read_enabled: true
+auto_read_scope: all-windows
 correction: true
 include_separator: true
 default_separator: ，

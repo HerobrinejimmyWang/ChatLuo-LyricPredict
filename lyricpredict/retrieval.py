@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .cleaner import CleanedSong, clean_lyrics_file
+from .cleaner import CleanedSong, clean_lyrics_file, is_credit_line
 
 TERMINATORS = (",", ".", "，", "。")
 LYRIC_SUFFIXES = {".txt", ".lrc"}
@@ -65,6 +65,8 @@ def _cut_at_terminator(text: str) -> str:
 def _is_usable_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
+        return False
+    if is_credit_line(stripped):
         return False
     if any(stripped.startswith(prefix) for prefix in META_PREFIXES):
         return False

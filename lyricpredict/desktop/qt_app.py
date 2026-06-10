@@ -11,6 +11,8 @@ from lyricpredict.config import load_config
 from lyricpredict.generation import LyricGenerator, normalize_prediction_boundary
 from lyricpredict.importer import prepare_dataset
 
+from .auto_read import AutoReadCounter, auto_read_scope_allows, is_text_change_key
+from .app_state import DesktopAppState, load_desktop_app_state, save_desktop_app_state
 from .model_registry import (
     ModelProfile,
     ModelRegistry,
@@ -23,13 +25,16 @@ from .model_registry import (
 from .settings import AppSettings, VALID_HOTKEYS, load_app_settings, save_app_settings
 from .windows_io import (
     DesktopDependencyError,
+    ULONG_PTR,
     cursor_position,
     focus_window,
     foreground_window,
     paste_text_with_restore,
     read_selected_text_with_restore,
     replace_previous_text,
+    window_signature,
 )
+from .uia_context import read_uia_context_with_reason
 from .workflow import (
     SuggestionKind,
     SuggestionPayload,
@@ -165,6 +170,86 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
                     user32.UnregisterHotKey(None, tab_id)
                 if registered_esc:
                     user32.UnregisterHotKey(None, esc_id)
+
+        def stop(self) -> None:
+            if self.thread_id and hasattr(ctypes, "windll"):
+                ctypes.windll.user32.PostThreadMessageW(self.thread_id, 0x0012, 0, 0)
+
+    class AutoReadHookThread(QtCore.QThread):
+        text_changed = QtCore.Signal(object)
+        registered = QtCore.Signal(str)
+        registration_failed = QtCore.Signal(str)
+
+        def __init__(self):
+            super().__init__()
+            self.thread_id = 0
+            self.hook = None
+            self.callback = None
+
+        def run(self) -> None:
+            try:
+                if not hasattr(ctypes, "windll"):
+                    message = "Auto read hook unavailable."
+                    print(message, flush=True)
+                    self.registration_failed.emit(message)
+                    return
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                user32.SetWindowsHookExW.restype = wintypes.HANDLE
+                user32.SetWindowsHookExW.argtypes = [
+                    ctypes.c_int,
+                    ctypes.c_void_p,
+                    wintypes.HINSTANCE,
+                    wintypes.DWORD,
+                ]
+                user32.CallNextHookEx.restype = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
+                user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+                kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+                self.thread_id = kernel32.GetCurrentThreadId()
+                low_level_keyboard_proc = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+                class KBDLLHOOKSTRUCT(ctypes.Structure):
+                    _fields_ = [
+                        ("vkCode", wintypes.DWORD),
+                        ("scanCode", wintypes.DWORD),
+                        ("flags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ULONG_PTR),
+                    ]
+
+                def callback(n_code, w_param, l_param):
+                    if n_code == 0 and int(w_param) in {0x0100, 0x0104}:
+                        event = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                        ctrl_pressed = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+                        alt_pressed = bool(user32.GetAsyncKeyState(0x12) & 0x8000)
+                        if is_text_change_key(int(event.vkCode), ctrl_pressed=ctrl_pressed, alt_pressed=alt_pressed):
+                            hwnd = int(user32.GetForegroundWindow())
+                            print(f"Auto read key event: hwnd={hwnd} vk={int(event.vkCode)}", flush=True)
+                            self.text_changed.emit(hwnd)
+                    return user32.CallNextHookEx(self.hook, n_code, w_param, l_param)
+
+                self.callback = low_level_keyboard_proc(callback)
+                self.hook = user32.SetWindowsHookExW(13, self.callback, kernel32.GetModuleHandleW(None), 0)
+                if not self.hook:
+                    message = f"Auto read hook failed: {ctypes.get_last_error()}"
+                    print(message, flush=True)
+                    self.registration_failed.emit(message)
+                    return
+                message = "Auto read hook ready"
+                print(message, flush=True)
+                self.registered.emit(message)
+                msg = wintypes.MSG()
+                while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                    user32.TranslateMessage(ctypes.byref(msg))
+                    user32.DispatchMessageW(ctypes.byref(msg))
+            except Exception as exc:
+                message = f"Auto read hook error: {exc}"
+                print(message, flush=True)
+                self.registration_failed.emit(message)
+            finally:
+                if self.hook:
+                    ctypes.windll.user32.UnhookWindowsHookEx(self.hook)
+                    self.hook = None
 
         def stop(self) -> None:
             if self.thread_id and hasattr(ctypes, "windll"):
@@ -547,6 +632,15 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             layout.addWidget(QtWidgets.QLabel("Read frequency"))
             layout.addWidget(self.read_frequency)
 
+            self.auto_read_enabled = QtWidgets.QCheckBox("Enable auto read")
+            self.auto_read_enabled.setChecked(settings.auto_read_enabled)
+            self.auto_read_scope = QtWidgets.QComboBox()
+            self.auto_read_scope.addItems(["used-windows", "all-windows"])
+            self.auto_read_scope.setCurrentText(settings.auto_read_scope)
+            layout.addWidget(self.auto_read_enabled)
+            layout.addWidget(QtWidgets.QLabel("Auto read scope"))
+            layout.addWidget(self.auto_read_scope)
+
             self.correction = QtWidgets.QCheckBox("Enable correction")
             self.correction.setChecked(settings.correction)
             self.include_separator = QtWidgets.QCheckBox("Include separator")
@@ -576,7 +670,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.status = QtWidgets.QLabel("Ready")
             layout.addWidget(self.status)
 
-            for widget in [self.enabled, self.correction, self.include_separator]:
+            for widget in [self.enabled, self.auto_read_enabled, self.correction, self.include_separator]:
                 widget.stateChanged.connect(self._emit_settings)
             for widget in [
                 self.mode,
@@ -586,6 +680,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
                 self.suggestion_style,
                 self.hotkey,
                 self.read_frequency,
+                self.auto_read_scope,
                 self.default_separator,
             ]:
                 widget.currentTextChanged.connect(self._emit_settings)
@@ -618,6 +713,8 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
                 suggestion_style=self.suggestion_style.currentText(),
                 hotkey=self.hotkey.currentText(),
                 read_frequency=self.read_frequency.currentText(),
+                auto_read_enabled=self.auto_read_enabled.isChecked(),
+                auto_read_scope=self.auto_read_scope.currentText(),
                 correction=self.correction.isChecked(),
                 include_separator=self.include_separator.isChecked(),
                 default_separator=separator,
@@ -649,6 +746,8 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.app = app
             self.settings = settings
             self.settings_path = settings_path
+            self.state_path = settings_path.with_name("app_state.yaml")
+            self.app_state = load_desktop_app_state(self.state_path)
             self.registry = load_model_registry(settings.model_registry_path)
             active_profile = self.registry.profile(settings.active_model_id)
             if active_profile is not None:
@@ -664,9 +763,21 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.prefetched_payload: SuggestionPayload | None = None
             self.prefetch_base_context = ""
             self.suggestion_key_thread: SuggestionKeyThread | None = None
+            self.auto_read_thread = AutoReadHookThread()
+            self.auto_read_thread.text_changed.connect(self.on_auto_read_key_event)
+            self.auto_read_counter = AutoReadCounter(self.settings.read_change_threshold)
+            self.auto_read_timer = QtCore.QTimer(self)
+            self.auto_read_timer.setSingleShot(True)
+            self.auto_read_timer.timeout.connect(self.try_auto_read)
+            self.auto_read_hwnd: int | None = None
+            self.used_windows: set[int] = set()
+            self.used_window_signatures: set[str] = set(self.app_state.auto_read_used_window_signatures)
+            self.last_auto_context = ""
             self.model_build_thread: ModelBuildThread | None = None
             self.window = SettingsWindow(self.settings, self.registry)
             self.suggestion = SuggestionLine()
+            self.auto_read_thread.registered.connect(self.set_auto_read_status)
+            self.auto_read_thread.registration_failed.connect(self.set_auto_read_status)
             self.hotkey_thread = HotkeyThread(self.settings.hotkey)
             self.hotkey_thread.activated.connect(self.trigger_prediction_from_hotkey)
             self.hotkey_thread.registered.connect(self.window.status.setText)
@@ -694,18 +805,71 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.tray.show()
 
         def start(self) -> None:
-            self.hotkey_thread.start()
             self.window.show()
+            self.hotkey_thread.start()
+            self.auto_read_thread.start()
+
+        def set_auto_read_status(self, message: str) -> None:
+            state = "enabled" if self.settings.auto_read_enabled else "disabled"
+            suffix = ""
+            if (
+                self.settings.auto_read_enabled
+                and self.settings.auto_read_scope == "used-windows"
+                and not self.used_windows
+                and not self.used_window_signatures
+            ):
+                suffix = " · press trigger hotkey once in target window"
+            self.window.status.setText(f"{message} ({state}){suffix}")
+
+        def remember_used_window(self, hwnd: int | None) -> None:
+            if not hwnd:
+                return
+            self.used_windows.add(int(hwnd))
+            try:
+                signature = window_signature(hwnd)
+            except DesktopDependencyError:
+                signature = ""
+            if not signature:
+                return
+            if signature not in self.used_window_signatures:
+                self.used_window_signatures.add(signature)
+                self.app_state = DesktopAppState(auto_read_used_window_signatures=self.used_window_signatures)
+                save_desktop_app_state(self.app_state, self.state_path)
+                print(f"Auto read remembered window: {signature}", flush=True)
+
+        def auto_read_scope_permits(self, hwnd: int | None) -> bool:
+            if auto_read_scope_allows(self.settings.auto_read_scope, hwnd, self.used_windows):
+                return True
+            if self.settings.auto_read_scope != "used-windows" or not hwnd:
+                return False
+            try:
+                signature = window_signature(hwnd)
+            except DesktopDependencyError:
+                return False
+            return bool(signature and signature in self.used_window_signatures)
 
         def trigger_prediction_from_hotkey(self, target_hwnd: int | None = None) -> None:
             self.target_hwnd = target_hwnd
+            self.remember_used_window(target_hwnd)
             QtCore.QTimer.singleShot(180, self.trigger_prediction)
 
         def update_settings(self, settings: AppSettings) -> None:
             old_hotkey = self.settings.hotkey
+            old_auto_read_enabled = self.settings.auto_read_enabled
+            old_auto_read_scope = self.settings.auto_read_scope
             self.settings = settings
+            self.auto_read_counter.threshold = settings.read_change_threshold
             save_app_settings(settings, self.settings_path)
             self.generator = None
+            if (
+                settings.auto_read_enabled != old_auto_read_enabled
+                or settings.auto_read_scope != old_auto_read_scope
+            ):
+                state = "enabled" if settings.auto_read_enabled else "disabled"
+                suffix = ""
+                if settings.auto_read_enabled and settings.auto_read_scope == "used-windows" and not self.used_windows:
+                    suffix = " · press trigger hotkey once in target window"
+                self.window.status.setText(f"Auto read {state}: {settings.auto_read_scope}{suffix}")
             if settings.hotkey != old_hotkey:
                 self.hotkey_thread.stop()
                 self.hotkey_thread.wait(500)
@@ -794,6 +958,64 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             if not selected:
                 selected = self.window.test_context.toPlainText().strip()
             return trim_context(selected, self.settings.context_window)
+
+        def _read_uia_context(self) -> str:
+            selected, reason = read_uia_context_with_reason(self.settings.context_window)
+            print(f"Auto read UIA: reason={reason} chars={len(selected)}", flush=True)
+            return trim_context(selected, self.settings.context_window)
+
+        def on_auto_read_key_event(self, hwnd: int | None) -> None:
+            if not self.settings.enabled or not self.settings.auto_read_enabled:
+                print("Auto read ignored: disabled", flush=True)
+                self.auto_read_counter.reset()
+                return
+            if self.state.visible or self.suggestion.isVisible():
+                print("Auto read ignored: suggestion visible", flush=True)
+                return
+            if not self.auto_read_scope_permits(hwnd):
+                print(
+                    f"Auto read ignored: scope={self.settings.auto_read_scope} hwnd={hwnd} used={sorted(self.used_windows)} signatures={len(self.used_window_signatures)}",
+                    flush=True,
+                )
+                return
+            if self.auto_read_counter.record_change():
+                self.auto_read_hwnd = int(hwnd) if hwnd else None
+                self.window.status.setText("Auto read pending")
+                self.auto_read_timer.start(400)
+
+        def try_auto_read(self) -> None:
+            if not self.settings.enabled or not self.settings.auto_read_enabled:
+                return
+            if self.state.visible or self.suggestion.isVisible():
+                return
+            hwnd = foreground_window()
+            if not self.auto_read_scope_permits(hwnd):
+                return
+            if self.auto_read_hwnd and hwnd and int(hwnd) != int(self.auto_read_hwnd):
+                return
+            context = self._read_uia_context()
+            if not context or context == self.last_auto_context:
+                print("Auto read skipped: no new UIA context", flush=True)
+                return
+            if self.state.is_rejected(context):
+                print("Auto read skipped: rejected cooldown", flush=True)
+                return
+            self.target_hwnd = hwnd
+            self.active_context = context
+            self.prefetched_payload = None
+            self.prefetch_base_context = ""
+            prediction = self._generator().predict(
+                context,
+                strictness=self.settings.strictness,
+                correction=self.settings.correction,
+            )
+            payload = prediction_to_payload(context, prediction)
+            self.last_auto_context = context
+            if payload is None:
+                self.window.status.setText(f"Auto no output: {prediction.reason}")
+                print(f"Auto prediction rejected: {prediction.reason}", flush=True)
+                return
+            self._show_payload(payload)
 
         def _show_payload(self, payload: SuggestionPayload) -> None:
             self._stop_suggestion_keys()
@@ -900,6 +1122,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
                 print("Prediction skipped: no context", flush=True)
                 return
             self.target_hwnd = self.target_hwnd or foreground_window()
+            self.remember_used_window(self.target_hwnd)
             if self.state.is_rejected(context):
                 self.window.status.setText("Suppressed after reject")
                 print("Prediction skipped: rejected cooldown", flush=True)
@@ -1006,6 +1229,8 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             if self.model_build_thread is not None and self.model_build_thread.isRunning():
                 self.model_build_thread.terminate()
                 self.model_build_thread.wait(500)
+            self.auto_read_thread.stop()
+            self.auto_read_thread.wait(500)
             self.hotkey_thread.stop()
             self.hotkey_thread.wait(500)
             self.app.quit()

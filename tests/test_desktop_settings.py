@@ -7,6 +7,8 @@ def test_app_settings_defaults_and_frequency_mapping():
     assert settings.mode == "auto"
     assert settings.strictness == "balanced"
     assert settings.read_change_threshold == 8
+    assert settings.auto_read_enabled is False
+    assert settings.auto_read_scope == "used-windows"
     assert settings.suggestion_position == "bottom-right"
     assert settings.suggestion_style == "plain"
     assert settings.active_model_id == "default"
@@ -18,6 +20,7 @@ def test_app_settings_coerce_invalid_values():
             "mode": "retrieval",
             "strictness": "wild",
             "context_window": 99,
+            "auto_read_scope": "everywhere",
             "suggestion_position": "center",
             "suggestion_style": "sparkles",
         }
@@ -26,6 +29,7 @@ def test_app_settings_coerce_invalid_values():
     assert settings.mode == "auto"
     assert settings.strictness == "balanced"
     assert settings.context_window == 32
+    assert settings.auto_read_scope == "used-windows"
     assert settings.suggestion_position == "bottom-right"
     assert settings.suggestion_style == "plain"
 
@@ -45,6 +49,8 @@ def test_app_settings_save_and_load_roundtrip(tmp_path):
         context_window=16,
         suggestion_position="top-left",
         suggestion_style="luo",
+        auto_read_enabled=True,
+        auto_read_scope="all-windows",
         active_model_id="quotes",
     )
 
@@ -57,6 +63,8 @@ def test_app_settings_save_and_load_roundtrip(tmp_path):
     assert actual.context_window == 16
     assert actual.suggestion_position == "top-left"
     assert actual.suggestion_style == "luo"
+    assert actual.auto_read_enabled is True
+    assert actual.auto_read_scope == "all-windows"
     assert actual.active_model_id == "quotes"
 
 

@@ -244,6 +244,47 @@ def foreground_window() -> int | None:
     return int(hwnd) if hwnd else None
 
 
+def window_class_name(hwnd: int | None) -> str:
+    _require_windows()
+    if not hwnd:
+        return ""
+    buffer = ctypes.create_unicode_buffer(256)
+    length = ctypes.windll.user32.GetClassNameW(int(hwnd), buffer, len(buffer))
+    return buffer.value[:length] if length else ""
+
+
+def window_process_path(hwnd: int | None) -> str:
+    _require_windows()
+    if not hwnd:
+        return ""
+    process_id = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(process_id))
+    if not process_id.value:
+        return ""
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(process_query_limited_information, False, process_id.value)
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return buffer.value[: size.value]
+        return ""
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def window_signature(hwnd: int | None) -> str:
+    class_name = window_class_name(hwnd)
+    process_path = window_process_path(hwnd)
+    if not class_name and not process_path:
+        return ""
+    return f"{process_path.lower()}|{class_name}"
+
+
 def focus_window(hwnd: int | None, delay_seconds: float = 0.08) -> None:
     _require_windows()
     if not hwnd:

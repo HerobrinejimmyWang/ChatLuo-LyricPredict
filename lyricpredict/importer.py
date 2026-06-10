@@ -20,6 +20,18 @@ class ImportStats:
     valid_lines: int
 
 
+@dataclass(frozen=True)
+class SourceStats:
+    source_dir: str
+    files: int
+
+
+@dataclass(frozen=True)
+class SourceManifest:
+    sources: list[SourceStats]
+    stats: ImportStats
+
+
 def safe_filename(name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", Path(name).name).strip("._")
     return safe or "lyrics.txt"
@@ -51,9 +63,13 @@ def clean_uploaded_bytes(filename: str, data: bytes) -> CleanedSong:
     return clean_lyrics_text(decode_text(data), source=safe_filename(filename))
 
 
-def prepare_dataset(raw_dir: Path, processed_dir: Path, validation_ratio: float = 0.1) -> ImportStats:
+def _prepare_dataset_from_files(
+    files: list[Path],
+    processed_dir: Path,
+    validation_ratio: float = 0.1,
+) -> ImportStats:
     processed_dir.mkdir(parents=True, exist_ok=True)
-    songs = [clean_lyrics_file(path) for path in iter_lyric_files(raw_dir)]
+    songs = [clean_lyrics_file(path) for path in files]
     songs = [song for song in songs if song.lines]
     deduped_songs: list[CleanedSong] = []
     seen_song_texts: set[str] = set()
@@ -78,11 +94,36 @@ def prepare_dataset(raw_dir: Path, processed_dir: Path, validation_ratio: float 
     (processed_dir / "train.txt").write_text("\n".join(train_lines), encoding="utf-8")
     (processed_dir / "valid.txt").write_text("\n".join(valid_lines), encoding="utf-8")
     stats = ImportStats(
-        files=len(list(iter_lyric_files(raw_dir))),
+        files=len(files),
         songs=len(songs),
         lines=len(all_lines),
         train_lines=len(train_lines),
         valid_lines=len(valid_lines),
     )
     (processed_dir / "stats.json").write_text(json.dumps(asdict(stats), ensure_ascii=False, indent=2), encoding="utf-8")
+    return stats
+
+
+def prepare_dataset(raw_dir: Path, processed_dir: Path, validation_ratio: float = 0.1) -> ImportStats:
+    return prepare_dataset_from_sources([raw_dir], processed_dir, validation_ratio)
+
+
+def prepare_dataset_from_sources(
+    raw_dirs: Iterable[Path],
+    processed_dir: Path,
+    validation_ratio: float = 0.1,
+) -> ImportStats:
+    sources: list[SourceStats] = []
+    files: list[Path] = []
+    for raw_dir in raw_dirs:
+        source_files = list(iter_lyric_files(raw_dir))
+        sources.append(SourceStats(source_dir=str(raw_dir), files=len(source_files)))
+        files.extend(source_files)
+
+    stats = _prepare_dataset_from_files(files, processed_dir, validation_ratio)
+    manifest = SourceManifest(sources=sources, stats=stats)
+    (processed_dir / "source_manifest.json").write_text(
+        json.dumps(asdict(manifest), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return stats

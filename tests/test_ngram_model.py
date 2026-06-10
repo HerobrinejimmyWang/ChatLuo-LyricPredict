@@ -95,3 +95,13 @@ def test_char_ngram_supports_short_context_for_non_lyric_tasks():
 
     assert prediction is not None
     assert prediction.text == "必有我师焉"
+
+
+def test_char_ngram_treats_space_as_semantic_separator():
+    songs = [CleanedSong(source="song", lines=["我明白 张开翅膀", "需要有怎样的英勇"])]
+    model = CharNGramModel.train(songs, order=12, min_context=2)
+
+    prediction = model.predict("我明白")
+
+    assert prediction is not None
+    assert prediction.text == "张开翅膀"
