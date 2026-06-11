@@ -73,6 +73,12 @@ class EvalResult:
         rate = self.wrong / self.total if self.total else 0.0
         return f"{self.wrong}/{self.total} ({rate:.1%})"
 
+    def display_rejected(self) -> str:
+        if self.skipped:
+            return "SKIPPED"
+        rate = self.rejected / self.total if self.total else 0.0
+        return f"{self.rejected}/{self.total} ({rate:.1%})"
+
 
 def cut_next_text(text: str) -> str:
     positions = [text.find(mark) for mark in TERMINATORS if text.find(mark) >= 0]
@@ -390,7 +396,12 @@ def markdown_table(
         values = []
         for column in columns:
             result = results.get(row, {}).get(column, EvalResult(0, 0, 0))
-            values.append(result.display_wrong() if metric == "wrong" else result.display_accuracy())
+            if metric == "wrong":
+                values.append(result.display_wrong())
+            elif metric == "abstain":
+                values.append(result.display_rejected())
+            else:
+                values.append(result.display_accuracy())
         lines.append(f"| {row:<15} | {' | '.join(values)} |")
     return "\n".join(lines)
 
@@ -413,6 +424,10 @@ def render_report(
                 "### Wrong Outputs",
                 "",
                 markdown_table(["Multi-sentences", "Single sentence", "Complex context"], columns, recall_results, "wrong"),
+                "",
+                "### Abstain",
+                "",
+                markdown_table(["Multi-sentences", "Single sentence", "Complex context"], columns, recall_results, "abstain"),
                 "",
             ]
         )
@@ -437,6 +452,15 @@ def render_report(
                     columns,
                     situation_results,
                     "wrong",
+                ),
+                "",
+                "### Abstain",
+                "",
+                markdown_table(
+                    ["Half-sentences", "Symbols Outputs", "Correction-one", "Correction-two"],
+                    columns,
+                    situation_results,
+                    "abstain",
                 ),
                 "",
             ]

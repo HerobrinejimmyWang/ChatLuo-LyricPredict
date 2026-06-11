@@ -17,6 +17,19 @@ class ConfidenceSettings:
     max_repeat_ratio: float = 0.35
 
 
+CONFIDENCE_SOURCES = ("retrieval", "ngram", "transformer")
+
+
+@dataclass(frozen=True)
+class ConfidenceProfiles:
+    profiles: dict[str, ConfidenceSettings]
+    legacy: ConfidenceSettings | None = None
+    samples: dict[str, list[float]] | None = None
+
+    def profile(self, source: str) -> ConfidenceSettings:
+        return self.profiles.get(source, self.profiles["transformer"])
+
+
 @dataclass(frozen=True)
 class ConfidenceResult:
     accepted: bool
@@ -87,16 +100,82 @@ class ConfidenceGate:
         return ConfidenceResult(True, confidence, "accepted")
 
 
-def load_confidence_settings(model_dir: Path, defaults: ConfidenceSettings) -> ConfidenceSettings:
-    path = model_dir / "confidence.json"
-    if not path.exists():
-        return defaults
-    data = json.loads(path.read_text(encoding="utf-8"))
+def default_confidence_profiles(defaults: ConfidenceSettings) -> dict[str, ConfidenceSettings]:
+    return {
+        "retrieval": ConfidenceSettings(threshold=0.90, min_token_probability=0.0, max_repeat_ratio=0.35),
+        "ngram": ConfidenceSettings(threshold=0.05, min_token_probability=0.0, max_repeat_ratio=0.45),
+        "transformer": ConfidenceSettings(
+            threshold=defaults.threshold,
+            min_token_probability=defaults.min_token_probability,
+            max_repeat_ratio=defaults.max_repeat_ratio,
+        ),
+    }
+
+
+def _settings_from_dict(data: dict, defaults: ConfidenceSettings) -> ConfidenceSettings:
     return ConfidenceSettings(
         threshold=float(data.get("threshold", defaults.threshold)),
         min_token_probability=float(data.get("min_token_probability", defaults.min_token_probability)),
         max_repeat_ratio=float(data.get("max_repeat_ratio", defaults.max_repeat_ratio)),
     )
+
+
+def load_confidence_profiles(model_dir: Path, defaults: ConfidenceSettings) -> ConfidenceProfiles:
+    path = model_dir / "confidence.json"
+    profiles = default_confidence_profiles(defaults)
+    if not path.exists():
+        return ConfidenceProfiles(profiles=profiles)
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data.get("profiles"), dict):
+        loaded: dict[str, ConfidenceSettings] = {}
+        for source in CONFIDENCE_SOURCES:
+            profile_data = data["profiles"].get(source, {})
+            loaded[source] = _settings_from_dict(profile_data, profiles[source])
+        legacy = _settings_from_dict(data["legacy"], defaults) if isinstance(data.get("legacy"), dict) else None
+        samples = data.get("samples") if isinstance(data.get("samples"), dict) else None
+        return ConfidenceProfiles(profiles=loaded, legacy=legacy, samples=samples)
+
+    legacy = _settings_from_dict(data, defaults)
+    profiles["retrieval"] = ConfidenceSettings(
+        threshold=legacy.threshold,
+        min_token_probability=legacy.min_token_probability,
+        max_repeat_ratio=legacy.max_repeat_ratio,
+    )
+    return ConfidenceProfiles(profiles=profiles, legacy=legacy, samples={"legacy": data.get("samples", [])})
+
+
+def load_confidence_settings(model_dir: Path, defaults: ConfidenceSettings) -> ConfidenceSettings:
+    path = model_dir / "confidence.json"
+    if not path.exists():
+        return defaults
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data.get("profiles"), dict):
+        legacy = data.get("legacy")
+        if isinstance(legacy, dict):
+            return _settings_from_dict(legacy, defaults)
+        transformer = data["profiles"].get("transformer", {})
+        return _settings_from_dict(transformer, defaults)
+    return _settings_from_dict(data, defaults)
+
+
+def save_confidence_profiles(
+    model_dir: Path,
+    profiles: dict[str, ConfidenceSettings],
+    samples: dict[str, list[float]] | None = None,
+    legacy: ConfidenceSettings | None = None,
+) -> None:
+    model_dir.mkdir(parents=True, exist_ok=True)
+    completed = default_confidence_profiles(profiles.get("transformer", ConfidenceSettings()))
+    completed.update({source: settings for source, settings in profiles.items() if source in CONFIDENCE_SOURCES})
+    payload = {
+        "version": 2,
+        "profiles": {source: asdict(completed[source]) for source in CONFIDENCE_SOURCES},
+        "samples": {source: (samples or {}).get(source, []) for source in CONFIDENCE_SOURCES},
+    }
+    if legacy is not None:
+        payload["legacy"] = asdict(legacy)
+    (model_dir / "confidence.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def save_confidence_settings(model_dir: Path, settings: ConfidenceSettings, samples: list[float] | None = None) -> None:

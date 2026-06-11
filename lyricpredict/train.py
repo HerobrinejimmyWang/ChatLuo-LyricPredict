@@ -138,6 +138,24 @@ def model_context_length(model) -> int:
     return min(value for value in candidates if isinstance(value, int) and value > 0)
 
 
+def checkpoint_step(path: Path) -> int:
+    try:
+        return int(path.name.split("-", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def latest_checkpoint(output_dir: Path) -> Path | None:
+    checkpoints = [
+        path
+        for path in output_dir.glob("checkpoint-*")
+        if path.is_dir() and checkpoint_step(path) >= 0
+    ]
+    if not checkpoints:
+        return None
+    return max(checkpoints, key=checkpoint_step)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fine-tune the lyric model with LoRA when available.")
     parser.add_argument("--config", default="configs/default.yaml")
@@ -147,8 +165,25 @@ def main() -> None:
     parser.add_argument("--limit-eval-blocks", type=int, default=None, help="Optional eval dataset limit for smoke tests.")
     parser.add_argument("--include-non-chinese", action="store_true", help="Keep lines without CJK characters.")
     parser.add_argument("--max-unk-ratio", type=float, default=0.2, help="Skip lines above this tokenizer [UNK] ratio.")
+    parser.add_argument("--resume-lora", action="store_true", help="Continue training an existing LoRA adapter in output-dir.")
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        default=None,
+        help="Trainer checkpoint path, or 'auto' to use the largest output-dir/checkpoint-* step.",
+    )
+    parser.add_argument("--num-train-epochs", type=float, default=None, help="Override config training epochs for this run.")
+    parser.add_argument("--learning-rate", type=float, default=None, help="Override config learning rate for this run.")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override per-device train/eval batch size for this run.")
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=None,
+        help="Override gradient accumulation steps for this run.",
+    )
     args = parser.parse_args()
     config = load_config(args.config)
+    output_dir = Path(args.output_dir) if args.output_dir else config.paths.model_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
@@ -161,16 +196,20 @@ def main() -> None:
         print(f"Training block_size clamped from {config.training.block_size} to model context length {block_size}.")
 
     try:
-        from peft import LoraConfig, TaskType, get_peft_model
+        from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 
-        lora_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=config.training.lora_r,
-            lora_alpha=config.training.lora_alpha,
-            lora_dropout=config.training.lora_dropout,
-            target_modules=["c_attn", "c_proj", "c_fc"],
-        )
-        model = get_peft_model(model, lora_config)
+        if args.resume_lora and (output_dir / "adapter_config.json").exists():
+            model = PeftModel.from_pretrained(model, str(output_dir), is_trainable=True)
+            print(f"Continuing trainable LoRA adapter from {output_dir}.")
+        else:
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=config.training.lora_r,
+                lora_alpha=config.training.lora_alpha,
+                lora_dropout=config.training.lora_dropout,
+                target_modules=["c_attn", "c_proj", "c_fc"],
+            )
+            model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
     except Exception as exc:
         print(f"LoRA is unavailable; training full model instead: {exc}")
@@ -206,16 +245,33 @@ def main() -> None:
             f"blocks: {len(eval_dataset)}"
         )
 
-    output_dir = Path(args.output_dir) if args.output_dir else config.paths.model_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    num_train_epochs = args.num_train_epochs if args.num_train_epochs is not None else config.training.num_train_epochs
+    learning_rate = args.learning_rate if args.learning_rate is not None else config.training.learning_rate
+    batch_size = args.batch_size if args.batch_size is not None else config.training.batch_size
+    gradient_accumulation_steps = (
+        args.gradient_accumulation_steps
+        if args.gradient_accumulation_steps is not None
+        else config.training.gradient_accumulation_steps
+    )
+    resume_checkpoint: Path | str | None = None
+    if args.resume_from_checkpoint:
+        if args.resume_from_checkpoint == "auto":
+            resume_checkpoint = latest_checkpoint(output_dir)
+            if resume_checkpoint is None:
+                print(f"No checkpoint-* directory found in {output_dir}; starting without Trainer checkpoint resume.")
+        else:
+            resume_checkpoint = Path(args.resume_from_checkpoint)
+            if not resume_checkpoint.exists():
+                raise FileNotFoundError(f"Checkpoint not found: {resume_checkpoint}")
+
     training_args = TrainingArguments(
         output_dir=str(output_dir),
-        num_train_epochs=config.training.num_train_epochs,
+        num_train_epochs=num_train_epochs,
         max_steps=args.max_steps if args.max_steps is not None else -1,
-        per_device_train_batch_size=config.training.batch_size,
-        per_device_eval_batch_size=config.training.batch_size,
-        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
-        learning_rate=config.training.learning_rate,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
         logging_steps=10,
         save_strategy="epoch",
         eval_strategy="epoch" if eval_dataset is not None else "no",
@@ -230,11 +286,25 @@ def main() -> None:
         eval_dataset=eval_dataset,
         data_collator=collator,
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=str(resume_checkpoint) if resume_checkpoint else None)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
     (output_dir / "training_config.json").write_text(
-        json.dumps({"base_model": config.model.base_model, "block_size": block_size}, indent=2),
+        json.dumps(
+            {
+                "base_model": config.model.base_model,
+                "block_size": block_size,
+                "resume_lora": args.resume_lora,
+                "resume_from_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
+                "overrides": {
+                    "num_train_epochs": args.num_train_epochs,
+                    "learning_rate": args.learning_rate,
+                    "batch_size": args.batch_size,
+                    "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                },
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
 

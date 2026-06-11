@@ -11,3 +11,14 @@ models:
   task: lyrics
   created_at: 0.0
   updated_at: 0.0
+- id: luo_lora
+  name: Luo LoRA
+  config_path: configs/models/luo_lora.yaml
+  model_dir: models/Luo_LoRA
+  raw_dir: data/models/luo_lora/raw
+  processed_dir: data/models/luo_lora/processed
+  data_dirs:
+  - selfdata/selflyricdata
+  task: lyrics
+  created_at: 0.0
+  updated_at: 0.0

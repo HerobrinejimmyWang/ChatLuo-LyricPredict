@@ -119,3 +119,31 @@ def test_training_pipeline_dry_run_does_not_write_registry(tmp_path, monkeypatch
     assert not registry_path.exists()
     assert not (tmp_path / run.profile.config_path).exists()
     assert not (tmp_path / run.profile.model_dir / "training_pipeline.json").exists()
+
+
+def test_training_pipeline_dry_run_includes_resume_options(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base_config = tmp_path / "configs" / "default.yaml"
+    registry_path = tmp_path / "configs" / "models.yaml"
+    write_base_config(base_config)
+
+    run = run_training_pipeline(
+        data_dirs=["selfdata/data2"],
+        model_name="Luo LoRA",
+        registry_path=str(registry_path),
+        base_config_path=str(base_config),
+        resume_lora=True,
+        resume_from_checkpoint="auto",
+        num_train_epochs=20,
+        batch_size=2,
+        gradient_accumulation_steps=1,
+        dry_run=True,
+    )
+
+    train = next(step for step in run.steps if step.name == "train_transformer")
+    assert "--resume-lora" in train.command
+    assert train.command[train.command.index("--resume-from-checkpoint") + 1] == "auto"
+    assert train.command[train.command.index("--num-train-epochs") + 1] == "20"
+    assert train.command[train.command.index("--batch-size") + 1] == "2"
+    assert train.command[train.command.index("--gradient-accumulation-steps") + 1] == "1"
+    assert run.options["resume_lora"] is True

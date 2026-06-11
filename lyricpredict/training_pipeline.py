@@ -32,6 +32,7 @@ class PipelineRun:
     data_dirs: list[str]
     steps: list[PipelineStep]
     dry_run: bool = False
+    options: dict | None = None
 
 
 CommandRunner = Callable[[PipelineStep], None]
@@ -111,6 +112,12 @@ def build_pipeline_steps(
     max_steps: int | None = None,
     limit_train_blocks: int | None = None,
     limit_eval_blocks: int | None = None,
+    resume_lora: bool = False,
+    resume_from_checkpoint: str | None = None,
+    num_train_epochs: float | None = None,
+    learning_rate: float | None = None,
+    batch_size: int | None = None,
+    gradient_accumulation_steps: int | None = None,
 ) -> list[PipelineStep]:
     prepare = [sys.executable, "-m", "lyricpredict.prepare", "--config", config_path]
     for data_dir in data_dirs:
@@ -133,6 +140,18 @@ def build_pipeline_steps(
             train.extend(["--limit-train-blocks", str(limit_train_blocks)])
         if limit_eval_blocks is not None:
             train.extend(["--limit-eval-blocks", str(limit_eval_blocks)])
+        if resume_lora:
+            train.append("--resume-lora")
+        if resume_from_checkpoint is not None:
+            train.extend(["--resume-from-checkpoint", resume_from_checkpoint])
+        if num_train_epochs is not None:
+            train.extend(["--num-train-epochs", str(num_train_epochs)])
+        if learning_rate is not None:
+            train.extend(["--learning-rate", str(learning_rate)])
+        if batch_size is not None:
+            train.extend(["--batch-size", str(batch_size)])
+        if gradient_accumulation_steps is not None:
+            train.extend(["--gradient-accumulation-steps", str(gradient_accumulation_steps)])
         steps.append(PipelineStep("train_transformer", train))
 
     if run_ngram:
@@ -166,6 +185,7 @@ def write_pipeline_state(run: PipelineRun, status: str = "configured") -> None:
         "updated_at": time.time(),
         "profile": asdict(run.profile),
         "data_dirs": run.data_dirs,
+        "options": run.options or {},
         "steps": [{"name": step.name, "command": step.command} for step in run.steps],
     }
     (model_dir / "training_pipeline.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -192,6 +212,12 @@ def run_training_pipeline(
     max_steps: int | None = None,
     limit_train_blocks: int | None = None,
     limit_eval_blocks: int | None = None,
+    resume_lora: bool = False,
+    resume_from_checkpoint: str | None = None,
+    num_train_epochs: float | None = None,
+    learning_rate: float | None = None,
+    batch_size: int | None = None,
+    gradient_accumulation_steps: int | None = None,
     dry_run: bool = False,
     runner: CommandRunner = default_runner,
 ) -> PipelineRun:
@@ -214,8 +240,30 @@ def run_training_pipeline(
         max_steps=max_steps,
         limit_train_blocks=limit_train_blocks,
         limit_eval_blocks=limit_eval_blocks,
+        resume_lora=resume_lora,
+        resume_from_checkpoint=resume_from_checkpoint,
+        num_train_epochs=num_train_epochs,
+        learning_rate=learning_rate,
+        batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
     )
-    run = PipelineRun(profile=profile, data_dirs=merged_data_dirs, steps=steps, dry_run=dry_run)
+    options = {
+        "run_transformer": run_transformer,
+        "run_ngram": run_ngram,
+        "run_calibrate": run_calibrate,
+        "resume_lora": resume_lora,
+        "resume_from_checkpoint": resume_from_checkpoint,
+        "overrides": {
+            "max_steps": max_steps,
+            "limit_train_blocks": limit_train_blocks,
+            "limit_eval_blocks": limit_eval_blocks,
+            "num_train_epochs": num_train_epochs,
+            "learning_rate": learning_rate,
+            "batch_size": batch_size,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+        },
+    }
+    run = PipelineRun(profile=profile, data_dirs=merged_data_dirs, steps=steps, dry_run=dry_run, options=options)
     if dry_run:
         for step in steps:
             print(f"[dry-run:{step.name}] {' '.join(step.command)}")
@@ -248,6 +296,12 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--limit-train-blocks", type=int, default=None)
     parser.add_argument("--limit-eval-blocks", type=int, default=None)
+    parser.add_argument("--resume-lora", action="store_true")
+    parser.add_argument("--resume-from-checkpoint", default=None)
+    parser.add_argument("--num-train-epochs", type=float, default=None)
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -266,6 +320,12 @@ def main() -> int:
         max_steps=args.max_steps,
         limit_train_blocks=args.limit_train_blocks,
         limit_eval_blocks=args.limit_eval_blocks,
+        resume_lora=args.resume_lora,
+        resume_from_checkpoint=args.resume_from_checkpoint,
+        num_train_epochs=args.num_train_epochs,
+        learning_rate=args.learning_rate,
+        batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         dry_run=args.dry_run,
     )
     print(
@@ -276,6 +336,7 @@ def main() -> int:
                 "model_dir": run.profile.model_dir,
                 "data_dirs": run.data_dirs,
                 "steps": [step.name for step in run.steps],
+                "options": run.options,
                 "dry_run": run.dry_run,
             },
             ensure_ascii=False,

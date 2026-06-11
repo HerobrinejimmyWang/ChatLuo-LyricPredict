@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from lyricpredict.cleaner import CleanedSong
+from lyricpredict.confidence import ConfidenceSettings, save_confidence_profiles
 from lyricpredict.config import AppConfig, ConfidenceConfig, InferenceConfig, ModelConfig, PathsConfig, TrainingConfig
 from lyricpredict.generation import LyricGenerator
 from lyricpredict.ngram_model import CharNGramModel
@@ -59,6 +60,25 @@ def test_model_only_uses_exported_model_artifact_without_retrieval(tmp_path, mon
     assert prediction.accepted
     assert prediction.reason == "char_ngram"
     assert prediction.text == "，你脸颊热泪"
+
+
+def test_model_only_uses_ngram_profile_not_retrieval_threshold(tmp_path):
+    config = make_config(tmp_path)
+    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["春天来了", "我们唱歌", "明天见面"])], order=8)
+    ngram.save(config.paths.model_dir / "ngram_model.json")
+    save_confidence_profiles(
+        config.paths.model_dir,
+        {
+            "retrieval": ConfidenceSettings(threshold=1.0, min_token_probability=0.0, max_repeat_ratio=0.35),
+            "ngram": ConfidenceSettings(threshold=0.0, min_token_probability=0.0, max_repeat_ratio=0.9),
+            "transformer": ConfidenceSettings(threshold=1.0, min_token_probability=0.0, max_repeat_ratio=0.35),
+        },
+    )
+
+    prediction = LyricGenerator(config, mode="model-only").predict("春天来了，我们唱歌")
+
+    assert prediction.accepted
+    assert prediction.reason == "char_ngram"
 
 
 def test_model_only_abstains_when_exported_artifact_misses(tmp_path, monkeypatch):
@@ -123,6 +143,14 @@ def test_auto_retrieval_can_return_corrected_context_when_enabled(tmp_path):
     config = make_config(tmp_path)
     extra_dir = config.paths.processed_dir.parent.parent / "selflyricdata"
     extra_dir.mkdir()
+    save_confidence_profiles(
+        config.paths.model_dir,
+        {
+            "retrieval": ConfidenceSettings(threshold=0.0, min_token_probability=0.0, max_repeat_ratio=0.9),
+            "ngram": ConfidenceSettings(threshold=0.0, min_token_probability=0.0, max_repeat_ratio=0.9),
+            "transformer": ConfidenceSettings(threshold=0.0, min_token_probability=0.0, max_repeat_ratio=0.9),
+        },
+    )
     (extra_dir / "song.lrc").write_text(
         "[00:01.00]未来的你会光芒万丈\n[00:02.00]而我也曾是你万分之一的光",
         encoding="utf-8",

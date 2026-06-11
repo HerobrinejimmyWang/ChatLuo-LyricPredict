@@ -141,6 +141,7 @@ def test_result_report_includes_strictness_and_wrong_output_tables():
     assert "auto:strict" in report
     assert "### Accuracy" in report
     assert "### Wrong Outputs" in report
+    assert "### Abstain" in report
     assert "1/2 (50.0%)" in report
 
 

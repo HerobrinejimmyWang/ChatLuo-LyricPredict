@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .confidence import ConfidenceGate, ConfidenceResult, ConfidenceSettings, load_confidence_settings
+from .confidence import ConfidenceGate, ConfidenceResult, ConfidenceSettings, load_confidence_profiles
 from .config import AppConfig
 from .context import extract_lyric_context
 from .ngram_model import CharNGramModel
@@ -170,7 +170,7 @@ class LyricGenerator:
             min_token_probability=config.confidence.min_token_probability,
             max_repeat_ratio=config.confidence.max_repeat_ratio,
         )
-        self.confidence_settings = load_confidence_settings(config.paths.model_dir, defaults)
+        self.confidence_profiles = load_confidence_profiles(config.paths.model_dir, defaults)
         root_dir = config.paths.processed_dir.parent.parent
         self.retriever = LyricRetriever(config.paths.processed_dir, extra_dirs=(root_dir / "selflyricdata",))
         self.ngram_model: CharNGramModel | None | bool = False
@@ -221,17 +221,17 @@ class LyricGenerator:
         name = normalize_strictness(strictness, self.config.inference.strictness)
         return STRICTNESS_POLICIES[name]
 
-    def _confidence_gate(self, policy: StrictnessPolicy) -> ConfidenceGate:
+    def _confidence_gate(self, policy: StrictnessPolicy, source: str) -> ConfidenceGate:
+        profile = self.confidence_profiles.profile(source)
         settings = ConfidenceSettings(
-            threshold=max(0.0, min(1.0, self.confidence_settings.threshold + policy.threshold_delta)),
-            min_token_probability=max(0.0, self.confidence_settings.min_token_probability * policy.min_token_probability_scale),
-            max_repeat_ratio=max(0.0, min(1.0, self.confidence_settings.max_repeat_ratio + policy.max_repeat_ratio_delta)),
+            threshold=max(0.0, min(1.0, profile.threshold + policy.threshold_delta)),
+            min_token_probability=max(0.0, profile.min_token_probability * policy.min_token_probability_scale),
+            max_repeat_ratio=max(0.0, min(1.0, profile.max_repeat_ratio + policy.max_repeat_ratio_delta)),
         )
         return ConfidenceGate(settings)
 
     def predict(self, context: str, strictness: str | None = None, correction: bool = False) -> Prediction:
         policy = self._policy(strictness)
-        confidence_gate = self._confidence_gate(policy)
         context = context.strip()
         if not context:
             return Prediction("", False, 0.0, "empty_context")
@@ -241,13 +241,16 @@ class LyricGenerator:
             if retrieved is not None:
                 corrected_context = retrieved.corrected_context if correction else None
                 boundary_context = corrected_context or lyric_context
-                return Prediction(
-                    normalize_prediction_boundary(boundary_context, retrieved.text),
+                text = normalize_prediction_boundary(boundary_context, retrieved.text)
+                result = self._confidence_gate(policy, "retrieval").evaluate(
+                    text,
+                    [retrieved.confidence],
                     True,
-                    retrieved.confidence,
-                    retrieved.reason,
-                    corrected_context,
                 )
+                if result.accepted:
+                    return Prediction(text, True, retrieved.confidence, retrieved.reason, corrected_context)
+                if self.mode == "retrieval" or not self.model_fallback_after_retrieval:
+                    return Prediction("", False, result.confidence, result.reason, corrected_context)
             if self.mode == "retrieval" or not self.model_fallback_after_retrieval:
                 return Prediction("", False, 0.0, "no_retrieval_match")
         ngram_model = self.load_ngram_model()
@@ -259,7 +262,7 @@ class LyricGenerator:
                 fuzzy_error_scale=policy.fuzzy_error_scale,
             )
             if ngram_prediction is not None:
-                result = confidence_gate.evaluate(ngram_prediction.text, [ngram_prediction.confidence], True)
+                result = self._confidence_gate(policy, "ngram").evaluate(ngram_prediction.text, [ngram_prediction.confidence], True)
                 if result.accepted:
                     corrected_context = ngram_prediction.corrected_context if correction else None
                     boundary_context = corrected_context or lyric_context
@@ -274,6 +277,7 @@ class LyricGenerator:
         if not policy.allow_transformer_fallback:
             return Prediction("", False, 0.0, "no_model_match")
         self.load()
+        confidence_gate = self._confidence_gate(policy, "transformer")
         best_rejection = Prediction("", False, 0.0, "no_attempt")
         attempts = max(1, self.config.model.generation_attempts)
         for _ in range(attempts):

@@ -1,0 +1,37 @@
+paths:
+  raw_dir: data/models/luo_lora/raw
+  processed_dir: data/models/luo_lora/processed
+  model_dir: models/Luo_LoRA
+  web_dir: web
+
+model:
+  base_model: souljoy/gpt2-small-chinese-cluecorpussmall
+  device: cpu
+  max_input_tokens: 192
+  max_new_tokens: 96
+  temperature: 0.85
+  top_p: 0.92
+  repetition_penalty: 1.08
+  generation_attempts: 4
+
+training:
+  block_size: 192
+  validation_ratio: 0.1
+  num_train_epochs: 3
+  learning_rate: 0.0002
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+
+confidence:
+  threshold: 0.05
+  min_token_probability: 0.005
+  max_repeat_ratio: 0.35
+  calibration_percentile: 20
+
+inference:
+  mode: auto
+  model_fallback_after_retrieval: true
+  strictness: balanced
