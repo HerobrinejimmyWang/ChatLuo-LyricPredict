@@ -80,6 +80,8 @@ def _resolve(base: Path, value: str) -> Path:
 def load_config(config_path: str | Path = "configs/default.yaml") -> AppConfig:
     path = Path(config_path).resolve()
     base = path.parent.parent
+    if path.parent.name == "models" and path.parent.parent.name == "configs":
+        base = path.parent.parent.parent
     raw = _load_yaml(path)
 
     paths = raw.get("paths", {})

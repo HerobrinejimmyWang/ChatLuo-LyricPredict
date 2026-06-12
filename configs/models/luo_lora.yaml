@@ -5,7 +5,7 @@ paths:
   web_dir: web
 
 model:
-  base_model: souljoy/gpt2-small-chinese-cluecorpussmall
+  base_model: models--Qwen--Qwen2.5-0.5B/snapshots/060db6499f32faf8b98477b0a26969ef7d8b9987
   device: cpu
   max_input_tokens: 192
   max_new_tokens: 96

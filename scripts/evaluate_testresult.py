@@ -20,6 +20,14 @@ from lyricpredict.generation import LyricGenerator
 from lyricpredict.retrieval import TERMINATORS, _is_usable_line, _key, _load_processed_songs
 
 TARGET_SOURCE_DIRS = ("selfdata/selflyricdata", "selfdata/selflyricdata2")
+SITUATION_ROWS = [
+    "Half-sentences",
+    "Symbols Outputs",
+    "Correction-one",
+    "Correction-two",
+    "Mixed Context",
+    "Out-of-library",
+]
 NOISE_SENTENCES = (
     "这里是一段普通说明文字，不属于任何歌词。",
     "用户正在回忆一首歌的氛围，下面才是需要续写的内容。",
@@ -48,6 +56,7 @@ class EvalCase:
     input_text: str
     expected: str
     source: str
+    corrected_input: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,10 +118,14 @@ def format_expected(context: str, next_line: str) -> str:
 
 
 def exact_match(expected: str, actual: str, accepted: bool) -> bool:
+    if expected == "":
+        return not accepted and actual == ""
     return accepted and actual == expected
 
 
 def is_wrong_output(expected: str, actual: str, accepted: bool) -> bool:
+    if expected == "":
+        return accepted
     return accepted and actual != expected
 
 
@@ -169,6 +182,16 @@ def build_single_sentence_cases(songs: list[CleanedSong]) -> list[EvalCase]:
     return cases
 
 
+def remove_ambiguous_cases(cases: list[EvalCase]) -> list[EvalCase]:
+    def input_identity(text: str) -> str:
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    outputs_by_input: dict[str, set[str]] = defaultdict(set)
+    for case in cases:
+        outputs_by_input[input_identity(case.input_text)].add(case.expected)
+    return [case for case in cases if len(outputs_by_input[input_identity(case.input_text)]) == 1]
+
+
 def build_multi_sentence_cases(songs: list[CleanedSong], token_count: Callable[[str], int], min_tokens: int = 32) -> list[EvalCase]:
     cases: list[EvalCase] = []
     for song, lines, index in adjacent_pairs(songs):
@@ -187,7 +210,7 @@ def build_multi_sentence_cases(songs: list[CleanedSong], token_count: Callable[[
                 source=song.source,
             )
         )
-    return cases
+    return remove_ambiguous_cases(cases)
 
 
 def build_complex_context_cases(songs: list[CleanedSong], seed: int) -> list[EvalCase]:
@@ -224,7 +247,7 @@ def build_half_sentence_pool(songs: list[CleanedSong]) -> list[EvalCase]:
                 expected = part[midpoint:].strip()
                 if _is_usable_line(input_text) and _is_usable_line(expected):
                     cases.append(EvalCase("Half-sentences", input_text, expected, song.source))
-    return cases
+    return remove_ambiguous_cases(cases)
 
 
 def build_symbol_pool(songs: list[CleanedSong]) -> list[EvalCase]:
@@ -247,7 +270,7 @@ def build_symbol_pool(songs: list[CleanedSong]) -> list[EvalCase]:
                     source=base.source,
                 )
             )
-    return cases
+    return remove_ambiguous_cases(cases)
 
 
 def apply_typos(text: str, count: int) -> str | None:
@@ -268,7 +291,53 @@ def build_correction_pool(songs: list[CleanedSong], count: int) -> list[EvalCase
     for base in build_single_sentence_cases(songs):
         typo_input = apply_typos(base.input_text, count)
         if typo_input and typo_input != base.input_text:
-            cases.append(EvalCase(scenario, typo_input, base.expected, base.source))
+            cases.append(EvalCase(scenario, typo_input, base.expected, base.source, corrected_input=base.input_text))
+    return remove_ambiguous_cases(cases)
+
+
+def build_mixed_context_pool(songs: list[CleanedSong], seed: int) -> list[EvalCase]:
+    rng = random.Random(seed)
+    bases = build_single_sentence_cases(songs)
+    by_source: dict[str, list[EvalCase]] = defaultdict(list)
+    for case in bases:
+        key = _key(case.input_text)
+        if len(key) >= 8:
+            by_source[case.source].append(case)
+    sources = sorted(source for source, cases in by_source.items() if cases)
+    cases: list[EvalCase] = []
+    if len(sources) < 2:
+        return cases
+    for index, source in enumerate(sources):
+        left = rng.choice(by_source[source]).input_text.strip().rstrip("".join(TERMINATORS))
+        right_source = sources[(index + 1) % len(sources)]
+        right = rng.choice(by_source[right_source]).input_text.strip().rstrip("".join(TERMINATORS))
+        if not left or not right:
+            continue
+        left_cut = max(2, len(left) // 2)
+        right_cut = max(2, len(right) // 2)
+        mixed = f"{left[:left_cut]}{right[right_cut:]}"
+        if _is_usable_line(mixed):
+            cases.append(EvalCase("Mixed Context", mixed, "", f"{source}|{right_source}"))
+    return remove_ambiguous_cases(cases)
+
+
+def build_out_of_library_pool(seed: int, size: int = 100) -> list[EvalCase]:
+    templates = (
+        "这是一段临时写下的普通说明文字并不属于任何歌词库",
+        "今天的备忘录只记录测试流程不应该触发歌词续写",
+        "用户正在描述软件功能而不是输入歌曲中的一句歌词",
+        "请把窗口放到屏幕左侧然后等待下一次操作",
+        "这个句子用于验证未知文本是否会被模型拒绝",
+        "我正在整理实验日志所以这里不是训练数据里的歌词",
+    )
+    rng = random.Random(seed)
+    cases: list[EvalCase] = []
+    for index in range(size):
+        text = templates[index % len(templates)]
+        suffix = "" if index < len(templates) else f" 第{index}条"
+        if rng.random() < 0.5:
+            suffix = suffix.replace(" ", "")
+        cases.append(EvalCase("Out-of-library", f"{text}{suffix}", "", "synthetic"))
     return cases
 
 
@@ -295,6 +364,8 @@ def build_situation_cases(songs: list[CleanedSong], sample_size: int, seed: int)
         "Symbols Outputs": build_symbol_pool(songs),
         "Correction-one": build_correction_pool(songs, 1),
         "Correction-two": build_correction_pool(songs, 2),
+        "Mixed Context": build_mixed_context_pool(songs, seed),
+        "Out-of-library": build_out_of_library_pool(seed),
     }
     return {
         name: sample_cases(cases, sample_size, seed + offset)
@@ -439,7 +510,7 @@ def render_report(
                 "### Accuracy",
                 "",
                 markdown_table(
-                    ["Half-sentences", "Symbols Outputs", "Correction-one", "Correction-two"],
+                    SITUATION_ROWS,
                     columns,
                     situation_results,
                     "accuracy",
@@ -448,7 +519,7 @@ def render_report(
                 "### Wrong Outputs",
                 "",
                 markdown_table(
-                    ["Half-sentences", "Symbols Outputs", "Correction-one", "Correction-two"],
+                    SITUATION_ROWS,
                     columns,
                     situation_results,
                     "wrong",
@@ -457,7 +528,7 @@ def render_report(
                 "### Abstain",
                 "",
                 markdown_table(
-                    ["Half-sentences", "Symbols Outputs", "Correction-one", "Correction-two"],
+                    SITUATION_ROWS,
                     columns,
                     situation_results,
                     "abstain",

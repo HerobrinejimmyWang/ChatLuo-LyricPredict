@@ -7,8 +7,11 @@ from scripts.evaluate_testresult import (
     build_complex_context_cases,
     build_correction_pool,
     build_half_sentence_pool,
+    build_mixed_context_pool,
     build_multi_sentence_cases,
+    build_out_of_library_pool,
     build_single_sentence_cases,
+    build_symbol_pool,
     exact_match,
     format_expected,
     is_wrong_output,
@@ -79,6 +82,31 @@ def test_multi_sentence_cases_extend_to_minimum_token_count():
     assert cases[-1].expected == "，下一句歌词"
 
 
+def test_multi_sentence_cases_remove_ambiguous_contexts():
+    songs = [
+        CleanedSong(source="a", lines=["前文甲", "同一句歌词", "第一种后续"]),
+        CleanedSong(source="b", lines=["前文甲", "同一句歌词", "第二种后续"]),
+        CleanedSong(source="c", lines=["前文乙", "唯一一句歌词", "唯一后续"]),
+    ]
+
+    cases = build_multi_sentence_cases(songs, token_count=len, min_tokens=8)
+
+    assert all(case.input_text != "前文甲，同一句歌词" for case in cases)
+    assert any(case.expected == "，唯一后续" for case in cases)
+
+
+def test_multi_sentence_cases_keep_context_disambiguated_same_last_line():
+    songs = [
+        CleanedSong(source="a", lines=["前文甲", "同一句歌词", "第一种后续"]),
+        CleanedSong(source="b", lines=["前文乙", "同一句歌词", "第二种后续"]),
+    ]
+
+    cases = build_multi_sentence_cases(songs, token_count=len, min_tokens=8)
+
+    assert {case.input_text for case in cases} == {"前文甲，同一句歌词", "前文乙，同一句歌词"}
+    assert {case.expected for case in cases} == {"，第一种后续", "，第二种后续"}
+
+
 def test_complex_context_cases_are_deterministic():
     songs = [CleanedSong(source="song", lines=["当前歌词", "下一句歌词"])]
 
@@ -98,6 +126,17 @@ def test_half_sentence_pool_cuts_inside_clause_without_extra_punctuation():
     assert any(case.input_text == "不论这世" and case.expected == "界多糟糕" for case in cases)
 
 
+def test_half_sentence_pool_removes_ambiguous_inputs():
+    songs = [
+        CleanedSong(source="a", lines=["一二三四甲甲甲甲"]),
+        CleanedSong(source="b", lines=["一二三四乙乙乙乙"]),
+    ]
+
+    cases = build_half_sentence_pool(songs)
+
+    assert all(case.input_text != "一二三四" for case in cases)
+
+
 def test_correction_pool_applies_requested_number_of_typos():
     songs = [CleanedSong(source="song", lines=["将故事传颂吧，未来的你会光芒万丈", "下一句歌词"])]
 
@@ -107,6 +146,57 @@ def test_correction_pool_applies_requested_number_of_typos():
     assert one[0].input_text == "将故事传诵吧，未来的你会光芒万丈"
     assert two[0].input_text == "将故事传诵吧，未来的你会光茫万丈"
     assert one[0].expected == "，下一句歌词"
+
+
+def test_correction_pool_removes_ambiguous_typo_inputs():
+    songs = [
+        CleanedSong(source="a", lines=["将故事传颂吧", "第一种后续"]),
+        CleanedSong(source="b", lines=["将故事传颂吧", "第二种后续"]),
+    ]
+
+    cases = build_correction_pool(songs, 1)
+
+    assert cases == []
+
+
+def test_symbol_pool_keeps_punctuation_variants_as_distinct_inputs():
+    songs = [CleanedSong(source="song", lines=["当前歌词", "下一句歌词"])]
+
+    cases = build_symbol_pool(songs)
+
+    inputs = {case.input_text for case in cases}
+    assert "当前歌词" in inputs
+    assert "当前歌词，" in inputs
+    assert "当前歌词," in inputs
+    assert "当前歌词。" in inputs
+
+
+def test_negative_expected_counts_rejection_as_correct_and_output_as_wrong():
+    assert exact_match("", "", False)
+    assert not exact_match("", "unexpected", True)
+    assert is_wrong_output("", "unexpected", True)
+    assert not is_wrong_output("", "", False)
+
+
+def test_mixed_context_pool_builds_expected_no_output_cases():
+    songs = [
+        CleanedSong(source="a", lines=["\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d", "\u7b2c\u4e00\u540e\u7eed"]),
+        CleanedSong(source="b", lines=["\u5341\u4e00\u5341\u4e8c\u5341\u4e09\u5341\u56db\u5341\u4e94", "\u7b2c\u4e8c\u540e\u7eed"]),
+    ]
+
+    cases = build_mixed_context_pool(songs, seed=123)
+
+    assert cases
+    assert all(case.expected == "" for case in cases)
+    assert all(case.scenario == "Mixed Context" for case in cases)
+
+
+def test_out_of_library_pool_builds_expected_no_output_cases():
+    cases = build_out_of_library_pool(seed=123, size=3)
+
+    assert len(cases) == 3
+    assert all(case.expected == "" for case in cases)
+    assert all(case.scenario == "Out-of-library" for case in cases)
 
 
 def test_exact_match_does_not_normalize_punctuation_or_spaces():

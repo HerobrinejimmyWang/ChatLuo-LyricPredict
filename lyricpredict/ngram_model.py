@@ -22,6 +22,13 @@ class NGramPrediction:
     corrected_context: str | None = None
 
 
+@dataclass(frozen=True)
+class NGramVerification:
+    score: float
+    reason: str
+    corrected_context: str | None = None
+
+
 def _append_with_boundary(pieces: list[str], line: str) -> None:
     if not pieces:
         pieces.append(line)
@@ -269,6 +276,50 @@ class CharNGramModel:
 
         text, count = max(options.items(), key=rank)
         return {text: count}
+
+    def verify(
+        self,
+        context: str,
+        candidate_text: str,
+        allow_fuzzy: bool = True,
+        fuzzy_error_scale: float = 1.0,
+    ) -> NGramVerification:
+        context = context.strip()
+        candidate_identity = self._continuation_identity(self._format_continuation(context, candidate_text))
+        if not context or not candidate_identity:
+            return NGramVerification(0.0, "ngram_empty_candidate")
+
+        continuation_match = self._continuation_match(context)
+        if continuation_match is not None:
+            options, matched_length = continuation_match
+            total = sum(options.values())
+            for option, count in options.items():
+                if self._continuation_identity(self._format_continuation(context, option)) == candidate_identity:
+                    ambiguity_penalty = 0.10 if len(options) > 1 else 0.0
+                    score = min(0.99, 0.62 + matched_length / max(1, self.order) * 0.22 + count / max(1, total) * 0.12)
+                    return NGramVerification(max(0.0, score - ambiguity_penalty), "ngram_exact")
+            return NGramVerification(0.0, "ngram_candidate_mismatch")
+
+        if allow_fuzzy:
+            fuzzy = self._fuzzy_continuation_options(context, fuzzy_error_scale=fuzzy_error_scale)
+            if fuzzy is not None:
+                options, matched_length, distance, corrected_key = fuzzy
+                total = sum(options.values())
+                for option, count in options.items():
+                    if self._continuation_identity(self._format_continuation(context, option)) == candidate_identity:
+                        corrected_suffix = self._best_context_form(corrected_key)
+                        corrected_context = (
+                            self._correct_context_suffix(context, corrected_suffix, matched_length)
+                            if corrected_suffix
+                            else None
+                        )
+                        score = min(
+                            0.92,
+                            0.50 + matched_length / max(1, self.order) * 0.26 + count / max(1, total) * 0.10 - distance * 0.04,
+                        )
+                        return NGramVerification(max(0.0, score), "ngram_fuzzy", corrected_context)
+
+        return NGramVerification(0.0, "ngram_no_support")
 
     def _fuzzy_continuation_options(
         self,

@@ -11,7 +11,9 @@ selfdata*/
 
 models/*
 !models/.gitkeep
+models--*
 
 *.log
 
 .design/
+_intermediate_backup/

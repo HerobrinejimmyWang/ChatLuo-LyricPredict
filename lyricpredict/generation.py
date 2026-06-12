@@ -8,7 +8,7 @@ from .confidence import ConfidenceGate, ConfidenceResult, ConfidenceSettings, lo
 from .config import AppConfig
 from .context import extract_lyric_context
 from .ngram_model import CharNGramModel
-from .retrieval import LyricRetriever
+from .retrieval import LyricRetriever, RetrievalResult, _key
 
 TERMINATORS = (",", ".", "，", "。")
 CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
@@ -43,6 +43,24 @@ class Prediction:
 
 
 @dataclass(frozen=True)
+class TransformerCandidate:
+    text: str
+    confidence: float
+    reason: str
+    raw_text: str = ""
+    corrected_context: str | None = None
+
+
+@dataclass(frozen=True)
+class CandidateDecision:
+    accepted: bool
+    text: str
+    score: float
+    reason: str
+    corrected_context: str | None = None
+
+
+@dataclass(frozen=True)
 class StrictnessPolicy:
     name: str
     threshold_delta: float = 0.0
@@ -51,6 +69,8 @@ class StrictnessPolicy:
     allow_fuzzy: bool = True
     fuzzy_error_scale: float = 1.0
     allow_transformer_fallback: bool = False
+    final_threshold: float = 0.62
+    support_threshold: float = 0.35
 
 
 STRICTNESS_POLICIES = {
@@ -62,8 +82,10 @@ STRICTNESS_POLICIES = {
         allow_fuzzy=True,
         fuzzy_error_scale=0.7,
         allow_transformer_fallback=False,
+        final_threshold=0.80,
+        support_threshold=0.65,
     ),
-    "balanced": StrictnessPolicy(name="balanced"),
+    "balanced": StrictnessPolicy(name="balanced", allow_transformer_fallback=True),
     "tolerant": StrictnessPolicy(
         name="tolerant",
         threshold_delta=-0.03,
@@ -72,6 +94,8 @@ STRICTNESS_POLICIES = {
         allow_fuzzy=True,
         fuzzy_error_scale=1.5,
         allow_transformer_fallback=True,
+        final_threshold=0.50,
+        support_threshold=0.0,
     ),
 }
 
@@ -136,6 +160,40 @@ def token_count_for_decoded_text(tokenizer, token_ids: list[int], target_text: s
         if decoded.startswith(target_text) or len(decoded) >= len(target_text):
             return index
     return len(token_ids)
+
+
+def normalized_similarity(left: str, right: str) -> float:
+    left_key = _key(left)
+    right_key = _key(right)
+    if not left_key or not right_key:
+        return 0.0
+    if left_key == right_key:
+        return 1.0
+    previous = list(range(len(right_key) + 1))
+    for left_index, left_char in enumerate(left_key, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right_key, start=1):
+            cost = 0 if left_char == right_char else 1
+            current.append(
+                min(
+                    previous[right_index] + 1,
+                    current[right_index - 1] + 1,
+                    previous[right_index - 1] + cost,
+                )
+            )
+        previous = current
+    distance = previous[-1]
+    return max(0.0, 1.0 - distance / max(len(left_key), len(right_key)))
+
+
+def boundary_score(context: str, text: str) -> float:
+    if not text.strip():
+        return 0.0
+    if text[:1] in TERMINATORS and context.rstrip()[-1:] in TERMINATORS:
+        return 0.35
+    if text[:1] not in TERMINATORS and context.rstrip()[-1:] not in TERMINATORS and not context_is_inside_clause(context):
+        return 0.65
+    return 1.0
 
 
 def configure_tokenizer_and_model(tokenizer, model) -> None:
@@ -230,12 +288,18 @@ class LyricGenerator:
         )
         return ConfidenceGate(settings)
 
+    def _retrieval_hint_threshold(self, policy: StrictnessPolicy) -> float:
+        profile = self.confidence_profiles.profile("retrieval")
+        direct_threshold = max(0.0, min(1.0, profile.threshold + policy.threshold_delta))
+        return max(0.35, direct_threshold - 0.35)
+
     def predict(self, context: str, strictness: str | None = None, correction: bool = False) -> Prediction:
         policy = self._policy(strictness)
         context = context.strip()
         if not context:
             return Prediction("", False, 0.0, "empty_context")
         lyric_context = extract_lyric_context(context)
+        retrieval_hint: RetrievalResult | None = None
         if self.mode in {"auto", "retrieval"}:
             retrieved = self.retriever.find_next_line(lyric_context)
             if retrieved is not None:
@@ -249,44 +313,104 @@ class LyricGenerator:
                 )
                 if result.accepted:
                     return Prediction(text, True, retrieved.confidence, retrieved.reason, corrected_context)
+                if retrieved.confidence >= self._retrieval_hint_threshold(policy):
+                    retrieval_hint = retrieved
                 if self.mode == "retrieval" or not self.model_fallback_after_retrieval:
                     return Prediction("", False, result.confidence, result.reason, corrected_context)
             if self.mode == "retrieval" or not self.model_fallback_after_retrieval:
                 return Prediction("", False, 0.0, "no_retrieval_match")
-        ngram_model = self.load_ngram_model()
-        if ngram_model is not None:
-            ngram_prediction = ngram_model.predict(
-                lyric_context,
-                max_chars=self.config.model.max_new_tokens,
-                allow_fuzzy=policy.allow_fuzzy,
-                fuzzy_error_scale=policy.fuzzy_error_scale,
-            )
-            if ngram_prediction is not None:
-                result = self._confidence_gate(policy, "ngram").evaluate(ngram_prediction.text, [ngram_prediction.confidence], True)
-                if result.accepted:
-                    corrected_context = ngram_prediction.corrected_context if correction else None
-                    boundary_context = corrected_context or lyric_context
-                    return Prediction(
-                        normalize_prediction_boundary(boundary_context, ngram_prediction.text),
-                        True,
-                        ngram_prediction.confidence,
-                        ngram_prediction.reason,
-                        corrected_context,
-                    )
-            return Prediction("", False, 0.0, "no_model_match")
-        if not policy.allow_transformer_fallback:
-            return Prediction("", False, 0.0, "no_model_match")
+
+        candidates = self._generate_transformer_candidates(lyric_context, policy)
+        decision = self._compare_candidates(lyric_context, candidates, retrieval_hint, policy, correction=correction)
+        return Prediction(
+            decision.text if decision.accepted else "",
+            decision.accepted,
+            decision.score,
+            decision.reason,
+            decision.corrected_context,
+        )
+
+    def _generate_transformer_candidates(
+        self,
+        context: str,
+        policy: StrictnessPolicy,
+    ) -> list[TransformerCandidate]:
         self.load()
         confidence_gate = self._confidence_gate(policy, "transformer")
-        best_rejection = Prediction("", False, 0.0, "no_attempt")
         attempts = max(1, self.config.model.generation_attempts)
+        candidates: list[TransformerCandidate] = []
+        seen: set[str] = set()
         for _ in range(attempts):
-            prediction = self._predict_loaded(lyric_context, confidence_gate)
-            if prediction.accepted:
-                return prediction
-            if prediction.confidence >= best_rejection.confidence:
-                best_rejection = prediction
-        return best_rejection
+            prediction = self._predict_loaded(context, confidence_gate)
+            if not prediction.accepted or not prediction.text:
+                continue
+            identity = _key(prediction.text)
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            candidates.append(
+                TransformerCandidate(
+                    text=prediction.text,
+                    confidence=prediction.confidence,
+                    reason=prediction.reason,
+                    corrected_context=prediction.corrected_context,
+                )
+            )
+        return candidates
+
+    def _compare_candidates(
+        self,
+        context: str,
+        candidates: list[TransformerCandidate],
+        retrieval_hint: RetrievalResult | None,
+        policy: StrictnessPolicy,
+        correction: bool = False,
+    ) -> CandidateDecision:
+        if not candidates:
+            return CandidateDecision(False, "", 0.0, "no_transformer_candidate")
+
+        ngram_model = self.load_ngram_model()
+        best = CandidateDecision(False, "", 0.0, "low_final_confidence")
+        for candidate in candidates:
+            text = normalize_prediction_boundary(context, candidate.text)
+            ngram_score = 0.0
+            ngram_reason = "ngram_unavailable"
+            ngram_corrected_context: str | None = None
+            if ngram_model is not None:
+                verification = ngram_model.verify(
+                    context,
+                    text,
+                    allow_fuzzy=policy.allow_fuzzy,
+                    fuzzy_error_scale=policy.fuzzy_error_scale,
+                )
+                ngram_score = verification.score
+                ngram_reason = verification.reason
+                ngram_corrected_context = verification.corrected_context
+
+            retrieval_score = normalized_similarity(retrieval_hint.text, text) if retrieval_hint is not None else 0.0
+            boundary = boundary_score(context, text)
+            final_score = (
+                candidate.confidence * 0.45
+                + ngram_score * 0.30
+                + retrieval_score * 0.20
+                + boundary * 0.05
+            )
+            support = max(ngram_score, retrieval_score)
+            corrected_context = None
+            if correction:
+                corrected_context = (
+                    retrieval_hint.corrected_context
+                    if retrieval_hint is not None and retrieval_score >= 0.5
+                    else ngram_corrected_context
+                )
+            reason = f"verified_transformer:{ngram_reason}"
+            accepted = final_score >= policy.final_threshold and support >= policy.support_threshold
+            decision = CandidateDecision(accepted, text if accepted else "", final_score, reason, corrected_context)
+            if decision.accepted:
+                return decision
+            if final_score >= best.score:
+                best = CandidateDecision(False, "", final_score, "low_final_confidence", corrected_context)
+        return best
 
     def _predict_loaded(self, context: str, confidence_gate: ConfidenceGate) -> Prediction:
         import torch

@@ -3,7 +3,7 @@ from pathlib import Path
 from lyricpredict.cleaner import CleanedSong
 from lyricpredict.confidence import ConfidenceSettings, save_confidence_profiles
 from lyricpredict.config import AppConfig, ConfidenceConfig, InferenceConfig, ModelConfig, PathsConfig, TrainingConfig
-from lyricpredict.generation import LyricGenerator
+from lyricpredict.generation import LyricGenerator, TransformerCandidate
 from lyricpredict.ngram_model import CharNGramModel
 
 
@@ -46,97 +46,90 @@ def make_config(tmp_path: Path) -> AppConfig:
     )
 
 
-def test_model_only_uses_exported_model_artifact_without_retrieval(tmp_path, monkeypatch):
-    config = make_config(tmp_path)
-    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["将故事传颂吧", "风携它远追", "你脸颊热泪"])], order=8)
+def save_simple_ngram(config: AppConfig) -> None:
+    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["春天来了", "我们唱歌", "明天见面"])], order=8)
     ngram.save(config.paths.model_dir / "ngram_model.json")
+
+
+def stub_transformer(monkeypatch, candidates: list[TransformerCandidate]) -> None:
+    monkeypatch.setattr(
+        LyricGenerator,
+        "_generate_transformer_candidates",
+        lambda self, context, policy: candidates,
+    )
+
+
+def test_model_only_uses_transformer_candidate_with_ngram_verifier(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    save_simple_ngram(config)
+    stub_transformer(monkeypatch, [TransformerCandidate(text="，明天见面", confidence=0.95, reason="accepted")])
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("retrieval must not be called in model-only mode")
 
     monkeypatch.setattr("lyricpredict.retrieval.LyricRetriever.find_next_line", fail_if_called)
-    prediction = LyricGenerator(config, mode="model-only").predict("将故事传颂吧，风携它远追")
-
-    assert prediction.accepted
-    assert prediction.reason == "char_ngram"
-    assert prediction.text == "，你脸颊热泪"
-
-
-def test_model_only_uses_ngram_profile_not_retrieval_threshold(tmp_path):
-    config = make_config(tmp_path)
-    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["春天来了", "我们唱歌", "明天见面"])], order=8)
-    ngram.save(config.paths.model_dir / "ngram_model.json")
-    save_confidence_profiles(
-        config.paths.model_dir,
-        {
-            "retrieval": ConfidenceSettings(threshold=1.0, min_token_probability=0.0, max_repeat_ratio=0.35),
-            "ngram": ConfidenceSettings(threshold=0.0, min_token_probability=0.0, max_repeat_ratio=0.9),
-            "transformer": ConfidenceSettings(threshold=1.0, min_token_probability=0.0, max_repeat_ratio=0.35),
-        },
-    )
-
     prediction = LyricGenerator(config, mode="model-only").predict("春天来了，我们唱歌")
 
     assert prediction.accepted
-    assert prediction.reason == "char_ngram"
+    assert prediction.reason == "verified_transformer:ngram_exact"
+    assert prediction.text == "，明天见面"
 
 
-def test_model_only_abstains_when_exported_artifact_misses(tmp_path, monkeypatch):
+def test_model_only_does_not_call_legacy_ngram_predict(tmp_path, monkeypatch):
     config = make_config(tmp_path)
-    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["将故事传颂吧", "风携它远追", "你脸颊热泪"])], order=8)
-    ngram.save(config.paths.model_dir / "ngram_model.json")
+    save_simple_ngram(config)
+    stub_transformer(monkeypatch, [TransformerCandidate(text="，明天见面", confidence=0.95, reason="accepted")])
 
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("transformer fallback must not be called when exported artifact exists")
+        raise AssertionError("legacy n-gram generation must not be called by the main flow")
 
-    monkeypatch.setattr(LyricGenerator, "load", fail_if_called)
-    prediction = LyricGenerator(config, mode="model-only").predict("完全不相关的上下文")
-
-    assert not prediction.accepted
-    assert prediction.reason == "no_model_match"
-
-
-def test_model_only_tolerant_does_not_fallback_when_exported_artifact_misses(tmp_path, monkeypatch):
-    config = make_config(tmp_path)
-    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["将故事传颂吧", "风携它远追", "你脸颊热泪"])], order=8)
-    ngram.save(config.paths.model_dir / "ngram_model.json")
-
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("transformer fallback must not be called when exported artifact exists")
-
-    monkeypatch.setattr(LyricGenerator, "load", fail_if_called)
-    prediction = LyricGenerator(config, mode="model-only").predict("完全不相关的上下文", strictness="tolerant")
-
-    assert not prediction.accepted
-    assert prediction.reason == "no_model_match"
-
-
-def test_model_only_can_return_corrected_context_when_enabled(tmp_path):
-    config = make_config(tmp_path)
-    ngram = CharNGramModel.train(
-        [CleanedSong(source="song", lines=["不论这世界多糟糕，未来的你会光芒万丈", "而我也曾是你万分之一的光"])],
-        order=16,
-    )
-    ngram.save(config.paths.model_dir / "ngram_model.json")
-
-    generator = LyricGenerator(config, mode="model-only")
-    without_correction = generator.predict("不论这世界多糟糕，未来的你会光茫万丈", correction=False)
-    with_correction = generator.predict("不论这世界多糟糕，未来的你会光茫万丈", correction=True)
-
-    assert without_correction.accepted
-    assert without_correction.corrected_context is None
-    assert with_correction.accepted
-    assert with_correction.corrected_context == "不论这世界多糟糕，未来的你会光芒万丈"
-
-
-def test_strictness_parameter_is_accepted_by_generator(tmp_path):
-    config = make_config(tmp_path)
-    ngram = CharNGramModel.train([CleanedSong(source="song", lines=["三人行，必有我师焉。"])], order=8, min_context=2)
-    ngram.save(config.paths.model_dir / "ngram_model.json")
-
-    prediction = LyricGenerator(config, mode="model-only").predict("三人行，", strictness="tolerant")
+    monkeypatch.setattr(CharNGramModel, "predict", fail_if_called)
+    prediction = LyricGenerator(config, mode="model-only").predict("春天来了，我们唱歌")
 
     assert prediction.accepted
+    assert prediction.reason == "verified_transformer:ngram_exact"
+
+
+def test_model_only_abstains_when_transformer_candidate_is_unsupported(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    save_simple_ngram(config)
+    stub_transformer(monkeypatch, [TransformerCandidate(text="，错误答案", confidence=0.95, reason="accepted")])
+
+    prediction = LyricGenerator(config, mode="model-only").predict("春天来了，我们唱歌")
+
+    assert not prediction.accepted
+    assert prediction.reason == "low_final_confidence"
+
+
+def test_model_only_can_return_corrected_context_from_ngram_verifier(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    ngram = CharNGramModel.train(
+        [CleanedSong(source="song", lines=["我想要我想要你知道，不论这世界多糟糕，未来的你会光芒万丈", "而我也曾是你万分之一的光"])],
+        order=32,
+    )
+    ngram.save(config.paths.model_dir / "ngram_model.json")
+    stub_transformer(monkeypatch, [TransformerCandidate(text="，而我也曾是你万分之一的光", confidence=0.98, reason="accepted")])
+
+    prediction = LyricGenerator(config, mode="model-only").predict(
+        "我想要我想要你知道，不论这世界多糟糕，未来的你会光茫万丈",
+        strictness="tolerant",
+        correction=True,
+    )
+
+    assert prediction.accepted
+    assert prediction.corrected_context == "我想要我想要你知道，不论这世界多糟糕，未来的你会光芒万丈"
+
+
+def test_strictness_parameter_affects_final_gate(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    save_simple_ngram(config)
+    stub_transformer(monkeypatch, [TransformerCandidate(text="，明天见面", confidence=0.45, reason="accepted")])
+
+    strict = LyricGenerator(config, mode="model-only").predict("春天来了，我们唱歌", strictness="strict")
+    tolerant = LyricGenerator(config, mode="model-only").predict("春天来了，我们唱歌", strictness="tolerant")
+
+    assert not strict.accepted
+    assert tolerant.accepted
 
 
 def test_auto_retrieval_can_return_corrected_context_when_enabled(tmp_path):
