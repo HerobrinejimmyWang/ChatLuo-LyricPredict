@@ -32,6 +32,6 @@ confidence:
   calibration_percentile: 20
 
 inference:
-  mode: auto
+  mode: matching
   model_fallback_after_retrieval: true
   strictness: balanced

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 import time
@@ -26,6 +27,7 @@ from scripts.evaluate_testresult import (
     build_situation_cases,
     exact_match,
     is_wrong_output,
+    sample_cases,
 )
 
 
@@ -118,6 +120,33 @@ def parse_lines(raw: str) -> list[str]:
     return lines
 
 
+def parse_scenario_sample_sizes(values: list[str]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for value in values:
+        if "=" not in value:
+            raise SystemExit(f"--scenario-sample-size must use Scenario=size format: {value}")
+        scenario, raw_size = value.split("=", 1)
+        scenario = scenario.strip()
+        try:
+            size = int(raw_size.strip())
+        except ValueError as exc:
+            raise SystemExit(f"Invalid sample size for {scenario}: {raw_size}") from exc
+        if size <= 0:
+            raise SystemExit(f"Scenario sample size must be positive: {value}")
+        result[scenario] = size
+    return result
+
+
+def sample_ratio_cases(cases_by_scenario: dict[str, list[EvalCase]], ratio: float, seed: int) -> dict[str, list[EvalCase]]:
+    if ratio <= 0 or ratio > 1:
+        raise SystemExit("--sample-ratio must be in the range (0, 1].")
+    sampled: dict[str, list[EvalCase]] = {}
+    for offset, (name, cases) in enumerate(cases_by_scenario.items()):
+        size = max(1, math.ceil(len(cases) * ratio)) if cases else 0
+        sampled[name] = sample_cases(cases, size, seed + offset)
+    return sampled
+
+
 def sample_total_cases(cases_by_scenario: dict[str, list[EvalCase]], total_size: int, seed: int) -> dict[str, list[EvalCase]]:
     import random
 
@@ -140,15 +169,45 @@ def sample_total_cases(cases_by_scenario: dict[str, list[EvalCase]], total_size:
     return sampled
 
 
-def build_cases(config: AppConfig, section: str, sample_size: int, seed: int, total_sample_size: int | None) -> dict[str, list[EvalCase]]:
+def build_situation_cases_with_overrides(
+    songs,
+    sample_size: int,
+    seed: int,
+    scenario_sample_sizes: dict[str, int],
+) -> dict[str, list[EvalCase]]:
+    if not scenario_sample_sizes:
+        return build_situation_cases(songs, sample_size, seed)
+    max_size = max([sample_size, *scenario_sample_sizes.values()])
+    cases = build_situation_cases(songs, max_size, seed)
+    sampled: dict[str, list[EvalCase]] = {}
+    for offset, (name, scenario_cases) in enumerate(cases.items()):
+        size = scenario_sample_sizes.get(name, sample_size)
+        sampled[name] = sample_cases(scenario_cases, size, seed + offset)
+    return sampled
+
+
+def build_cases(
+    config: AppConfig,
+    section: str,
+    sample_size: int,
+    seed: int,
+    total_sample_size: int | None,
+    sample_ratio: float | None,
+    scenario_sample_sizes: dict[str, int],
+) -> dict[str, list[EvalCase]]:
     songs = _load_processed_songs(config.paths.processed_dir)
     if not songs:
         raise SystemExit("No processed songs found. Run prepare first.")
     cases: dict[str, list[EvalCase]] = {}
     if section in {"recall", "all"}:
-        cases.update(build_recall_cases(songs, config, seed))
+        recall_cases = build_recall_cases(songs, config, seed)
+        if sample_ratio is not None:
+            recall_cases = sample_ratio_cases(recall_cases, sample_ratio, seed)
+        cases.update(recall_cases)
     if section in {"situations", "all"}:
-        cases.update(build_situation_cases(songs, sample_size, seed))
+        cases.update(build_situation_cases_with_overrides(songs, sample_size, seed, scenario_sample_sizes))
+    if sample_ratio is not None and total_sample_size is not None:
+        raise SystemExit("--sample-ratio and --total-sample-size cannot be used together.")
     if total_sample_size is not None:
         cases = sample_total_cases(cases, total_sample_size, seed)
     return cases
@@ -415,6 +474,13 @@ def main() -> int:
     parser.add_argument("--lines", default="closed-library")
     parser.add_argument("--sample-size", type=int, default=100)
     parser.add_argument("--total-sample-size", type=int, default=None)
+    parser.add_argument("--sample-ratio", type=float, default=None)
+    parser.add_argument(
+        "--scenario-sample-size",
+        action="append",
+        default=[],
+        help="Override one situation sample size, e.g. 'Half-sentences=20'. Repeat as needed.",
+    )
     parser.add_argument("--seed", type=int, default=20260610)
     parser.add_argument("--output", default="matching_results.generated.md")
     parser.add_argument("--failure-output", default="data/processed/matching_failures.json")
@@ -434,7 +500,16 @@ def main() -> int:
     strictnesses = parse_strictnesses(args.strictnesses)
     lines = parse_lines(args.lines)
     model_dirs = parse_model_dirs(args.model_dir)
-    cases_by_scenario = build_cases(config, args.section, args.sample_size, args.seed, args.total_sample_size)
+    scenario_sample_sizes = parse_scenario_sample_sizes(args.scenario_sample_size)
+    cases_by_scenario = build_cases(
+        config,
+        args.section,
+        args.sample_size,
+        args.seed,
+        args.total_sample_size,
+        args.sample_ratio,
+        scenario_sample_sizes,
+    )
     songs = _load_processed_songs(config.paths.processed_dir)
     candidates = build_candidate_library(songs)
     columns = [f"{model}:{strictness}" for model in model_names for strictness in strictnesses]

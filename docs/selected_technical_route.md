@@ -21,6 +21,22 @@ context -> candidate library -> char-match ranker -> confidence gate -> output /
 - 带分隔符语义的变体：用于 Symbols Outputs。
 - 标准上下文：用于纠错时返回 `corrected_context`。
 
+## Duplicate Handling
+
+`prepare` 阶段会输出 `near_duplicate_report.json`，用于发现会影响候选权重和评估负例构造的重复/近重复歌曲。
+
+当前策略是 `report-only`：
+
+- 完全重复的清洗后歌曲会继续按旧逻辑去重。
+- 高度相似但不完全一致的歌曲只写入报告，不自动剔除。
+- `source_manifest.json` 中记录 `duplicate_policy: report-only` 和 `duplicate_report: near_duplicate_report.json`。
+- 后续 app 导入数据时，可以读取该报告并提示用户人工选择：保留全部、剔除某个版本、或以后扩展为合并 source。
+
+报告字段包括：
+
+- `exact_duplicates`: 已自动跳过的完全重复歌曲。
+- `near_duplicates`: 建议人工复核的近重复歌曲对，包含 `containment`、`jaccard`、共享歌词行数和各自 line-key 数量。
+
 ## Scoring Strategy
 
 `char-match` 采用多级匹配：
@@ -60,9 +76,10 @@ context -> candidate library -> char-match ranker -> confidence gate -> output /
 当前主要结论：
 
 - Single sentence 与 Complex context 抽样召回满分。
-- Multi-sentences 仍有少量拒答，但没有错误输出。
-- Half-sentences、Symbols Outputs、Correction-one、Mixed Context、Out-of-library 表现稳定。
-- Correction-two 的主要缺口是拒答，可后续通过更强的纠错候选生成或轻量 ranker 优化。
+- Multi-sentences 在 balanced 下仍有 1 条拒答，但没有错误输出。
+- Half-sentences、Symbols Outputs、Correction-one、Correction-two、Mixed Context、Out-of-library 在 balanced 下均为满分。
+- Correction Full 在 balanced 下 `Correction-one` 与 `Correction-two` 均为 10/10；后续优化重点可转向更大样本下的稳定性和启动/索引延迟。
+- 扩大验证后，当前数据集 10% Recall 下 balanced 仍保持较高召回，但 Multi-sentences 出现 2 条空格格式导致的 exact-match wrong；xiong 数据集抽样验证中 balanced 没有 wrong output，说明 closed-library `char-match` 路线具备迁移可用性。
 
 ## Next Integration Step
 
@@ -72,3 +89,14 @@ context -> candidate library -> char-match ranker -> confidence gate -> output /
 - auto 链路可先走严格 retriever；retriever 不过时调用 `char-match:balanced`。
 - legacy n-gram generator 只保留为 benchmark 或隐藏 fallback，不直接进入新的整体流程。
 - 前端无需暴露复杂后端逻辑，只展示输出、拒答、纠错提示和可读 reason。
+## App Integration Update
+
+当前 app 默认路线已经收敛为 `matching -> char-match`，不再向用户暴露 `retrieval` / `model-only` 分支。
+
+- Web API 会统一使用 `mode=matching`。
+- 桌面端预测生成器固定使用 `matching`。
+- 桌面端“Update model”按钮变为一键重建清洗缓存和匹配索引。
+- 运行时主要依赖 `data/processed/songs.jsonl` 与 `data/processed/matching_index.json`。
+- 旧 Transformer/LoRA 与 legacy n-gram 路线继续保留为后端实验和 benchmark，不参与默认 app workflow。
+
+更完整的 app 工作流说明见 `docs/app_matching_workflow.md`。

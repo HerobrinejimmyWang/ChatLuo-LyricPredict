@@ -10,8 +10,8 @@ Cell format: correct / abstain / wrong.
 |--------------|-------------------|---------------------|---------------------|
 | Half-sentences (10) | 10 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
 | Symbols Outputs (10) | 10 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
-| Correction-one (10) | 10 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
-| Correction-two (10) | 9 / 1 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
+| Correction-one (10) | 8 / 2 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
+| Correction-two (10) | 6 / 4 / 0 | 8 / 2 / 0 | 9 / 1 / 0 |
 | Mixed Context (10) | 10 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
 | Out-of-library (10) | 10 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
 
@@ -21,16 +21,16 @@ Requires correct output and correct `corrected_context`.
 
 | Scenario | char-match:strict | char-match:balanced | char-match:tolerant |
 |----------|-------------------|---------------------|---------------------|
-| Correction-one | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) |
-| Correction-two | 9/10 (90.0%) | 10/10 (100.0%) | 10/10 (100.0%) |
+| Correction-one | 8/10 (80.0%) | 10/10 (100.0%) | 10/10 (100.0%) |
+| Correction-two | 6/10 (60.0%) | 8/10 (80.0%) | 9/10 (90.0%) |
 
 ### Situation Latency mean / median
 
 | Scenario | char-match:strict | char-match:balanced | char-match:tolerant |
 |----------|-------------------|---------------------|---------------------|
-| Half-sentences | 10.90 / 9.85 ms | 10.12 / 9.97 ms | 10.88 / 10.36 ms |
-| Symbols Outputs | 20.78 / 20.11 ms | 20.90 / 21.00 ms | 20.43 / 20.38 ms |
-| Correction-one | 30.33 / 27.38 ms | 31.23 / 27.69 ms | 31.50 / 27.95 ms |
-| Correction-two | 34.16 / 37.42 ms | 34.28 / 37.79 ms | 35.12 / 39.62 ms |
-| Mixed Context | 25.10 / 26.49 ms | 25.03 / 26.50 ms | 24.95 / 25.87 ms |
-| Out-of-library | 65.27 / 67.14 ms | 65.34 / 66.67 ms | 65.62 / 67.33 ms |
+| Half-sentences | 92.30 / 37.15 ms | 34.91 / 35.38 ms | 32.26 / 33.80 ms |
+| Symbols Outputs | 64.41 / 43.30 ms | 64.64 / 44.42 ms | 63.51 / 44.34 ms |
+| Correction-one | 62.34 / 57.74 ms | 69.09 / 68.13 ms | 63.39 / 60.33 ms |
+| Correction-two | 66.84 / 62.57 ms | 69.87 / 65.96 ms | 69.65 / 68.88 ms |
+| Mixed Context | 73.66 / 66.23 ms | 70.43 / 67.56 ms | 70.64 / 68.56 ms |
+| Out-of-library | 152.50 / 149.96 ms | 151.30 / 153.05 ms | 145.92 / 145.00 ms |

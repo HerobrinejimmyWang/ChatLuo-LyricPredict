@@ -12,8 +12,7 @@ const strictnessInputs = Array.from(document.querySelectorAll("input[name='stric
 const correctionInput = document.querySelector("#correctionInput");
 
 const MODE_LABELS = {
-  auto: "Auto",
-  "model-only": "Model-only",
+  matching: "Matching",
 };
 
 const STRICTNESS_LABELS = {
@@ -23,11 +22,11 @@ const STRICTNESS_LABELS = {
 };
 
 function getMode() {
-  return modeInputs.find((input) => input.checked)?.value || "auto";
+  return "matching";
 }
 
 function setMode(mode) {
-  const nextMode = MODE_LABELS[mode] ? mode : "auto";
+  const nextMode = MODE_LABELS[mode] ? mode : "matching";
   modeInputs.forEach((input) => {
     input.checked = input.value === nextMode;
   });
@@ -60,6 +59,21 @@ function updateReadout() {
 function setStatus(text, lowConfidence = false) {
   statusText.textContent = text;
   statusText.classList.toggle("low-confidence", lowConfidence);
+}
+
+function displayReason(reason) {
+  if (reason === "retrieval") return "Matched";
+  if (reason && reason.startsWith("char_match_half")) return "Partial matched";
+  if (["char_match_suffix", "char_match_prefix", "char_match_overlap"].includes(reason)) return "Matched";
+  if (reason === "char_match_ambiguous") return "Ambiguous match";
+  if (reason === "char_match_threshold") return "Low confidence";
+  if (reason === "char_match_no_candidate") return "No match";
+  if (reason && reason.startsWith("verified_transformer:ngram_exact")) return "Verified";
+  if (reason && reason.startsWith("verified_transformer:ngram_fuzzy")) return "Verified with correction";
+  if (reason === "low_final_confidence") return "Low confidence";
+  if (reason === "no_transformer_candidate") return "No usable output";
+  if (reason === "no_model_match") return "No match";
+  return String(reason || "No output").replaceAll("_", " ");
 }
 
 function normalizeBoundary(current, text) {
@@ -124,7 +138,7 @@ async function predictNext() {
     const result = await response.json();
     confidenceText.textContent = Number(result.confidence || 0).toFixed(3);
     if (!result.accepted) {
-      setStatus(`No output: ${result.reason}`, true);
+      setStatus(`No output: ${displayReason(result.reason)}`, true);
       return;
     }
     if (result.corrected_context) {

@@ -216,7 +216,7 @@ class LyricGenerator:
     ):
         self.config = config
         self.mode = (mode or config.inference.mode).replace("_", "-").lower()
-        if self.mode not in {"auto", "model-only", "retrieval"}:
+        if self.mode not in {"matching", "auto", "model-only", "retrieval"}:
             raise ValueError(f"Unsupported inference mode: {mode}")
         self.model_fallback_after_retrieval = (
             config.inference.model_fallback_after_retrieval
@@ -232,6 +232,7 @@ class LyricGenerator:
         root_dir = config.paths.processed_dir.parent.parent
         self.retriever = LyricRetriever(config.paths.processed_dir, extra_dirs=(root_dir / "selflyricdata",))
         self.ngram_model: CharNGramModel | None | bool = False
+        self.matching_predictor = None
         self.tokenizer = None
         self.model = None
 
@@ -275,6 +276,14 @@ class LyricGenerator:
             self.ngram_model = CharNGramModel.load(self.config.paths.model_dir / "ngram_model.json")
         return self.ngram_model
 
+    def load_matching_predictor(self):
+        if self.matching_predictor is None:
+            from .matching_model import CharMatchPredictor, load_or_build_candidate_library
+
+            candidates = load_or_build_candidate_library(self.config.paths.processed_dir)
+            self.matching_predictor = CharMatchPredictor(candidates)
+        return self.matching_predictor
+
     def _policy(self, strictness: str | None = None) -> StrictnessPolicy:
         name = normalize_strictness(strictness, self.config.inference.strictness)
         return STRICTNESS_POLICIES[name]
@@ -299,6 +308,12 @@ class LyricGenerator:
         if not context:
             return Prediction("", False, 0.0, "empty_context")
         lyric_context = extract_lyric_context(context)
+        if self.mode == "matching":
+            return self.load_matching_predictor().predict(
+                lyric_context,
+                strictness=policy.name,
+                correction=correction,
+            )
         retrieval_hint: RetrievalResult | None = None
         if self.mode in {"auto", "retrieval"}:
             retrieved = self.retriever.find_next_line(lyric_context)

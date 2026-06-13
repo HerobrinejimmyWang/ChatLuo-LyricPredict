@@ -9,7 +9,7 @@ import yaml
 from .auto_read import VALID_AUTO_READ_SCOPES
 
 
-VALID_MODES = {"auto", "model-only"}
+VALID_MODES = {"matching"}
 VALID_STRICTNESS = {"strict", "balanced", "tolerant"}
 VALID_FREQUENCIES = {"often", "sometimes", "seldom"}
 VALID_CONTEXT_WINDOWS = (10, 16, 24, 32)
@@ -22,7 +22,7 @@ READ_FREQUENCY_CHANGES = {"often": 4, "sometimes": 8, "seldom": 16}
 @dataclass(frozen=True)
 class AppSettings:
     enabled: bool = True
-    mode: str = "auto"
+    mode: str = "matching"
     strictness: str = "balanced"
     context_window: int = 24
     read_frequency: str = "sometimes"

@@ -90,6 +90,32 @@ def prediction_to_payload(context: str, prediction: Prediction) -> SuggestionPay
     )
 
 
+def display_reason(reason: str) -> str:
+    if reason.startswith("char_match_half"):
+        return "partial matched"
+    if reason in {"char_match_suffix", "char_match_prefix", "char_match_overlap"}:
+        return "matched"
+    if reason == "char_match_ambiguous":
+        return "ambiguous match"
+    if reason == "char_match_threshold":
+        return "low confidence"
+    if reason == "char_match_no_candidate":
+        return "no match"
+    if reason == "retrieval":
+        return "matched"
+    if reason.startswith("verified_transformer:ngram_exact"):
+        return "verified"
+    if reason.startswith("verified_transformer:ngram_fuzzy"):
+        return "verified with correction"
+    if reason == "low_final_confidence":
+        return "low confidence"
+    if reason == "no_transformer_candidate":
+        return "no usable output"
+    if reason == "no_model_match":
+        return "no match"
+    return reason.replace("_", " ")
+
+
 def _without_leading_separator(text: str) -> str:
     return strip_leading_separators(text)
 

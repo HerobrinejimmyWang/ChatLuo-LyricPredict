@@ -11,7 +11,10 @@ from lyricpredict.matching_model import (
     build_matching_samples,
     build_pair_examples,
     format_expected,
+    load_matching_index,
+    load_or_build_candidate_library,
     train_bigru_ranker,
+    write_matching_index,
 )
 from lyricpredict.ngram_model import CharNGramModel
 from scripts.evaluate_testresult import format_expected as result_format_expected
@@ -158,6 +161,29 @@ def test_char_match_rejects_out_of_library_text():
     prediction = predictor.predict("这是一段普通说明文字不是歌词", strictness="balanced")
 
     assert not prediction.accepted
+
+
+def test_matching_index_roundtrip_and_stale_detection(tmp_path):
+    config = make_config(tmp_path)
+    write_songs(config, sample_songs())
+
+    written = write_matching_index(config.paths.processed_dir, sample_songs())
+    loaded = load_matching_index(config.paths.processed_dir)
+
+    assert loaded == written
+    with (config.paths.processed_dir / "songs.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"source": "new", "lines": ["new line"]}, ensure_ascii=False) + "\n")
+    assert load_matching_index(config.paths.processed_dir) is None
+
+
+def test_load_or_build_candidate_library_creates_matching_index(tmp_path):
+    config = make_config(tmp_path)
+    write_songs(config, sample_songs())
+
+    candidates = load_or_build_candidate_library(config.paths.processed_dir)
+
+    assert candidates
+    assert (config.paths.processed_dir / "matching_index.json").exists()
 
 
 def test_char_match_prefers_half_sentence_candidate_with_spaces():

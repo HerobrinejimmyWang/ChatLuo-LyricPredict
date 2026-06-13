@@ -46,9 +46,10 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
     generators: dict[str, LyricGenerator] = {}
 
     def get_generator(mode: str | None = None) -> LyricGenerator:
-        key = mode or config.inference.mode
+        del mode
+        key = "matching"
         if key not in generators:
-            generators[key] = LyricGenerator(config, mode=mode)
+            generators[key] = LyricGenerator(config, mode=key)
         return generators[key]
 
     @app.post("/api/import")
@@ -63,6 +64,7 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
             data = await uploaded.read()
             saved.append(str(write_uploaded_file(config.paths.raw_dir, uploaded.filename or "lyrics.txt", data)))
         stats = prepare_dataset(config.paths.raw_dir, config.paths.processed_dir, config.training.validation_ratio)
+        generators.clear()
         return {"saved": saved, "stats": asdict(stats)}
 
     @app.post("/api/predict", response_model=PredictResponse)

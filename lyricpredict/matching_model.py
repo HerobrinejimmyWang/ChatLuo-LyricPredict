@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
@@ -41,6 +42,9 @@ CHAR_MATCH_AMBIGUITY_MARGINS = {
     "balanced": 0.005,
     "tolerant": 0.001,
 }
+
+MATCHING_INDEX_VERSION = 1
+MATCHING_INDEX_FILENAME = "matching_index.json"
 
 
 @dataclass(frozen=True)
@@ -217,6 +221,100 @@ def build_candidate_library(
         seen.add(identity)
         candidates.append(candidate)
     return candidates
+
+
+def _songs_digest(processed_dir: Path) -> str:
+    songs_path = processed_dir / "songs.jsonl"
+    if not songs_path.exists():
+        return ""
+    digest = hashlib.sha256()
+    with songs_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _candidate_to_json(candidate: CandidateEntry) -> dict:
+    return {
+        "text": candidate.text,
+        "source_context": candidate.source_context,
+        "source": candidate.source,
+        "kind": candidate.kind,
+        "index": candidate.index,
+    }
+
+
+def _candidate_from_json(data: dict) -> CandidateEntry:
+    return CandidateEntry(
+        text=str(data.get("text", "")),
+        source_context=str(data.get("source_context", "")),
+        source=str(data.get("source", "")),
+        kind=str(data.get("kind", "")),
+        index=int(data.get("index", -1)),
+    )
+
+
+def write_matching_index(
+    processed_dir: Path,
+    songs: Sequence[CleanedSong] | None = None,
+    include_half: bool = True,
+    include_windows: bool = True,
+    max_window_lines: int = 8,
+) -> list[CandidateEntry]:
+    songs = list(songs if songs is not None else _load_processed_songs(processed_dir))
+    candidates = build_candidate_library(
+        songs,
+        include_half=include_half,
+        include_windows=include_windows,
+        max_window_lines=max_window_lines,
+    )
+    payload = {
+        "version": MATCHING_INDEX_VERSION,
+        "source": "songs.jsonl",
+        "songs_digest": _songs_digest(processed_dir),
+        "songs": len(songs),
+        "candidate_count": len(candidates),
+        "options": {
+            "include_half": include_half,
+            "include_windows": include_windows,
+            "max_window_lines": max_window_lines,
+        },
+        "candidates": [_candidate_to_json(candidate) for candidate in candidates],
+    }
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    (processed_dir / MATCHING_INDEX_FILENAME).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return candidates
+
+
+def load_matching_index(processed_dir: Path) -> list[CandidateEntry] | None:
+    index_path = processed_dir / MATCHING_INDEX_FILENAME
+    if not index_path.exists():
+        return None
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if int(data.get("version", 0)) != MATCHING_INDEX_VERSION:
+        return None
+    if str(data.get("songs_digest", "")) != _songs_digest(processed_dir):
+        return None
+    raw_candidates = data.get("candidates")
+    if not isinstance(raw_candidates, list):
+        return None
+    return [_candidate_from_json(item) for item in raw_candidates if isinstance(item, dict)]
+
+
+def load_or_build_candidate_library(processed_dir: Path) -> list[CandidateEntry]:
+    indexed = load_matching_index(processed_dir)
+    if indexed is not None:
+        return indexed
+    songs = _load_processed_songs(processed_dir)
+    if not songs:
+        return []
+    return write_matching_index(processed_dir, songs)
 
 
 def _edit_distance_limited(left: str, right: str, limit: int) -> int | None:
@@ -870,7 +968,7 @@ def make_predictor(
         return LegacyNGramBenchmark(config)
     if normalized == "retrieval":
         return RetrievalBenchmark(config)
-    candidates = list(candidates or build_candidate_library(_load_processed_songs(config.paths.processed_dir)))
+    candidates = list(candidates or load_or_build_candidate_library(config.paths.processed_dir))
     if normalized == "char-match":
         return CharMatchPredictor(candidates)
     if normalized in {"char-bigru", "token-bigru"}:

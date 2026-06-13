@@ -8,7 +8,7 @@ from pathlib import Path
 from ctypes import wintypes
 
 from lyricpredict.config import load_config
-from lyricpredict.generation import LyricGenerator, normalize_prediction_boundary
+from lyricpredict.generation import LyricGenerator, Prediction, normalize_prediction_boundary
 from lyricpredict.importer import prepare_dataset
 
 from .auto_read import AutoReadCounter, auto_read_scope_allows, is_text_change_key
@@ -41,6 +41,7 @@ from .workflow import (
     SuggestionState,
     compose_insert_text,
     describe_correction,
+    display_reason,
     prediction_to_payload,
     trim_context,
 )
@@ -255,39 +256,100 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             if self.thread_id and hasattr(ctypes, "windll"):
                 ctypes.windll.user32.PostThreadMessageW(self.thread_id, 0x0012, 0, 0)
 
+    def _profile_source_dirs(profile: ModelProfile) -> list[str]:
+        sources: list[str] = []
+        seen: set[str] = set()
+        for value in [*profile.data_dirs, profile.raw_dir]:
+            path = Path(value)
+            has_lyrics = path.exists() and any(
+                item.is_file() and item.suffix.lower() in {".txt", ".lrc"} for item in path.rglob("*")
+            )
+            if value in seen or (value == profile.raw_dir and not has_lyrics):
+                continue
+            sources.append(value)
+            seen.add(value)
+        if not sources:
+            sources.append(profile.raw_dir)
+        return sources
+
     class ModelBuildThread(QtCore.QThread):
         completed = QtCore.Signal(str)
         failed = QtCore.Signal(str)
 
-        def __init__(self, config_path: str, build_kind: str = "ngram"):
+        def __init__(self, profile: ModelProfile, registry_path: str):
             super().__init__()
-            self.config_path = config_path
-            self.build_kind = build_kind
+            self.profile = profile
+            self.registry_path = registry_path
 
         def run(self) -> None:
-            if self.build_kind == "transformer":
-                commands = [
-                    [sys.executable, "-m", "lyricpredict.prepare", "--config", self.config_path],
-                    [sys.executable, "-m", "lyricpredict.train", "--config", self.config_path],
-                    [sys.executable, "-m", "lyricpredict.calibrate", "--config", self.config_path],
-                ]
-                completed_message = "Transformer training finished"
-            else:
-                commands = [
-                    [sys.executable, "-m", "lyricpredict.prepare", "--config", self.config_path],
-                    [sys.executable, "-m", "lyricpredict.ngram_model", "--config", self.config_path, "--order", "32"],
-                ]
-                completed_message = "Model ngram rebuilt"
+            command = [
+                sys.executable,
+                "-m",
+                "lyricpredict.training_pipeline",
+                "--model-id",
+                self.profile.id,
+                "--registry",
+                self.registry_path,
+                "--skip-transformer",
+                "--skip-ngram",
+                "--skip-calibrate",
+            ]
+            for source_dir in _profile_source_dirs(self.profile):
+                command.extend(["--data-dir", source_dir])
             try:
-                for command in commands:
-                    result = subprocess.run(command, cwd=Path.cwd(), capture_output=True, text=True, check=False)
-                    if result.returncode != 0:
-                        message = (result.stderr or result.stdout or "model build failed").strip()
-                        self.failed.emit(message[-500:])
-                        return
-                self.completed.emit(completed_message)
+                result = subprocess.run(command, cwd=Path.cwd(), capture_output=True, text=True, check=False)
+                if result.returncode != 0:
+                    message = (result.stderr or result.stdout or "model update failed").strip()
+                    self.failed.emit(message[-500:])
+                    return
+                self.completed.emit("Library index updated")
             except Exception as exc:
                 self.failed.emit(str(exc))
+
+    class PredictionThread(QtCore.QThread):
+        completed = QtCore.Signal(object)
+        failed = QtCore.Signal(object)
+
+        def __init__(
+            self,
+            request_id: int,
+            kind: str,
+            generator: LyricGenerator,
+            context: str,
+            strictness: str,
+            correction: bool,
+            base_context: str = "",
+            source_payload: SuggestionPayload | None = None,
+        ):
+            super().__init__()
+            self.request_id = request_id
+            self.kind = kind
+            self.generator = generator
+            self.context = context
+            self.strictness = strictness
+            self.correction = correction
+            self.base_context = base_context
+            self.source_payload = source_payload
+
+        def run(self) -> None:
+            try:
+                prediction = self.generator.predict(
+                    self.context,
+                    strictness=self.strictness,
+                    correction=self.correction,
+                )
+                self.completed.emit(
+                    {
+                        "request_id": self.request_id,
+                        "kind": self.kind,
+                        "context": self.context,
+                        "base_context": self.base_context,
+                        "source_payload": self.source_payload,
+                        "prediction": prediction,
+                    }
+                )
+            except Exception as exc:
+                self.failed.emit({"request_id": self.request_id, "kind": self.kind, "error": str(exc)})
 
     class LuoSuggestionCanvas(QtWidgets.QWidget):
         def __init__(self):
@@ -563,8 +625,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
         import_requested = QtCore.Signal(list)
         model_selected = QtCore.Signal(str)
         new_model_requested = QtCore.Signal()
-        rebuild_model_requested = QtCore.Signal()
-        train_model_requested = QtCore.Signal()
+        update_model_requested = QtCore.Signal()
 
         def __init__(self, settings: AppSettings, registry: ModelRegistry):
             super().__init__()
@@ -582,18 +643,17 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             layout.addWidget(self.model_combo)
             model_buttons = QtWidgets.QHBoxLayout()
             self.new_model_button = QtWidgets.QPushButton("New model")
-            self.rebuild_model_button = QtWidgets.QPushButton("Rebuild ngram")
-            self.train_model_button = QtWidgets.QPushButton("Train transformer")
+            self.update_model_button = QtWidgets.QPushButton("Update model")
             model_buttons.addWidget(self.new_model_button)
-            model_buttons.addWidget(self.rebuild_model_button)
-            model_buttons.addWidget(self.train_model_button)
+            model_buttons.addWidget(self.update_model_button)
             layout.addLayout(model_buttons)
             self.set_models(registry, settings.active_model_id)
 
             self.mode = QtWidgets.QComboBox()
-            self.mode.addItems(["auto", "model-only"])
-            self.mode.setCurrentText(settings.mode)
-            layout.addWidget(QtWidgets.QLabel("Mode"))
+            self.mode.addItem("Matching", "matching")
+            mode_index = self.mode.findData(settings.mode)
+            self.mode.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+            layout.addWidget(QtWidgets.QLabel("Route"))
             layout.addWidget(self.mode)
 
             self.strictness = QtWidgets.QComboBox()
@@ -686,8 +746,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
                 widget.currentTextChanged.connect(self._emit_settings)
             self.model_combo.currentIndexChanged.connect(self._emit_model_selection)
             self.new_model_button.clicked.connect(self.new_model_requested.emit)
-            self.rebuild_model_button.clicked.connect(self.rebuild_model_requested.emit)
-            self.train_model_button.clicked.connect(self.train_model_requested.emit)
+            self.update_model_button.clicked.connect(self.update_model_requested.emit)
             self.trigger_button.clicked.connect(self.trigger_requested.emit)
             self.import_button.clicked.connect(self._choose_import_files)
 
@@ -706,7 +765,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             return replace(
                 self.settings,
                 enabled=self.enabled.isChecked(),
-                mode=self.mode.currentText(),
+                mode=self.mode.currentData() or AppSettings.mode,
                 strictness=self.strictness.currentText(),
                 context_window=int(self.context_window.currentText()),
                 suggestion_position=self.suggestion_position.currentText(),
@@ -774,6 +833,8 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.used_window_signatures: set[str] = set(self.app_state.auto_read_used_window_signatures)
             self.last_auto_context = ""
             self.model_build_thread: ModelBuildThread | None = None
+            self.prediction_thread: PredictionThread | None = None
+            self.prediction_request_id = 0
             self.window = SettingsWindow(self.settings, self.registry)
             self.suggestion = SuggestionLine()
             self.auto_read_thread.registered.connect(self.set_auto_read_status)
@@ -787,8 +848,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.window.import_requested.connect(self.import_files)
             self.window.model_selected.connect(self.select_model)
             self.window.new_model_requested.connect(self.create_model)
-            self.window.rebuild_model_requested.connect(self.rebuild_model)
-            self.window.train_model_requested.connect(self.train_model)
+            self.window.update_model_requested.connect(self.update_model)
             self.suggestion.accepted.connect(self.accept_suggestion)
             self.suggestion.rejected.connect(self.reject_suggestion)
             self.suggestion.ignored.connect(self.ignore_suggestion)
@@ -913,29 +973,20 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.generator = None
             self.window.status.setText(f"Created model: {profile.name}")
 
-        def _start_model_build(self, build_kind: str) -> None:
+        def update_model(self) -> None:
             profile = self._active_profile()
             if profile is None:
                 self.window.status.setText("No active model")
                 return
             if self.model_build_thread is not None and self.model_build_thread.isRunning():
-                self.window.status.setText("Model build already running")
+                self.window.status.setText("Model update already running")
                 return
             create_runtime_config(profile)
-            if build_kind == "transformer":
-                self.window.status.setText(f"Training transformer: {profile.name}")
-            else:
-                self.window.status.setText(f"Rebuilding ngram: {profile.name}")
-            self.model_build_thread = ModelBuildThread(profile.config_path, build_kind)
+            self.window.status.setText(f"Updating model: {profile.name}")
+            self.model_build_thread = ModelBuildThread(profile, self.settings.model_registry_path)
             self.model_build_thread.completed.connect(self._model_build_completed)
             self.model_build_thread.failed.connect(self._model_build_failed)
             self.model_build_thread.start()
-
-        def rebuild_model(self) -> None:
-            self._start_model_build("ngram")
-
-        def train_model(self) -> None:
-            self._start_model_build("transformer")
 
         def _model_build_completed(self, message: str) -> None:
             self.generator = None
@@ -946,8 +997,93 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
 
         def _generator(self) -> LyricGenerator:
             if self.generator is None:
-                self.generator = LyricGenerator(load_config(self.settings.lyric_config_path), mode=self.settings.mode)
+                self.generator = LyricGenerator(load_config(self.settings.lyric_config_path), mode="matching")
             return self.generator
+
+        def _prediction_running(self) -> bool:
+            return self.prediction_thread is not None and self.prediction_thread.isRunning()
+
+        def _start_prediction(
+            self,
+            kind: str,
+            context: str,
+            status: str,
+            base_context: str = "",
+            source_payload: SuggestionPayload | None = None,
+        ) -> bool:
+            if self._prediction_running():
+                if kind != "prefetch":
+                    self.window.status.setText("Prediction already running")
+                return False
+            self.prediction_request_id += 1
+            request_id = self.prediction_request_id
+            if status:
+                self.window.status.setText(status)
+            self.prediction_thread = PredictionThread(
+                request_id=request_id,
+                kind=kind,
+                generator=self._generator(),
+                context=context,
+                strictness=self.settings.strictness,
+                correction=self.settings.correction,
+                base_context=base_context,
+                source_payload=source_payload,
+            )
+            self.prediction_thread.completed.connect(self._prediction_completed)
+            self.prediction_thread.failed.connect(self._prediction_failed)
+            self.prediction_thread.start()
+            return True
+
+        def _finish_prediction_thread(self, request_id: int) -> bool:
+            if request_id != self.prediction_request_id:
+                return False
+            self.prediction_thread = None
+            return True
+
+        def _prediction_completed(self, result: dict) -> None:
+            request_id = int(result.get("request_id", 0))
+            if not self._finish_prediction_thread(request_id):
+                return
+            kind = str(result.get("kind", "manual"))
+            context = str(result.get("context", ""))
+            prediction: Prediction = result["prediction"]
+            payload = prediction_to_payload(context, prediction)
+
+            if kind == "prefetch":
+                source_payload = result.get("source_payload")
+                if not self.state.visible or self.state.payload != source_payload:
+                    return
+                if payload is None:
+                    self.prefetched_payload = None
+                    self.prefetch_base_context = ""
+                    return
+                self.prefetched_payload = replace(payload, kind=SuggestionKind.CONTINUE)
+                self.prefetch_base_context = str(result.get("base_context", ""))
+                return
+
+            if payload is None:
+                if kind == "auto":
+                    self.window.status.setText(f"Auto no output: {display_reason(prediction.reason)}")
+                    print(f"Auto prediction rejected: {prediction.reason}", flush=True)
+                elif kind == "continue":
+                    self.window.status.setText(f"No continue: {display_reason(prediction.reason)}")
+                    print(f"Continue rejected: {prediction.reason}", flush=True)
+                else:
+                    self.window.status.setText(f"No output: {display_reason(prediction.reason)}")
+                    print(f"Prediction rejected: {prediction.reason}", flush=True)
+                return
+
+            if kind == "continue":
+                payload = replace(payload, kind=SuggestionKind.CONTINUE)
+            self._show_payload(payload)
+
+        def _prediction_failed(self, result: dict) -> None:
+            request_id = int(result.get("request_id", 0))
+            if not self._finish_prediction_thread(request_id):
+                return
+            message = str(result.get("error", "prediction failed"))
+            self.window.status.setText(f"Prediction failed: {message[-160:]}")
+            print(f"Prediction failed: {message}", flush=True)
 
         def _read_context(self) -> str:
             try:
@@ -1004,23 +1140,13 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.active_context = context
             self.prefetched_payload = None
             self.prefetch_base_context = ""
-            prediction = self._generator().predict(
-                context,
-                strictness=self.settings.strictness,
-                correction=self.settings.correction,
-            )
-            payload = prediction_to_payload(context, prediction)
             self.last_auto_context = context
-            if payload is None:
-                self.window.status.setText(f"Auto no output: {prediction.reason}")
-                print(f"Auto prediction rejected: {prediction.reason}", flush=True)
-                return
-            self._show_payload(payload)
+            self._start_prediction("auto", context, "Auto predicting...")
 
         def _show_payload(self, payload: SuggestionPayload) -> None:
             self._stop_suggestion_keys()
             self.state.show(payload)
-            self.window.status.setText(f"Suggested: {payload.reason} {payload.confidence:.3f}")
+            self.window.status.setText(f"Suggested: {display_reason(payload.reason)} {payload.confidence:.3f}")
             print(f"Prediction suggested: {payload.reason} {payload.confidence:.3f}", flush=True)
             display_payload = payload
             if payload.kind in {SuggestionKind.PREDICTION, SuggestionKind.CONTINUE}:
@@ -1072,18 +1198,13 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             inserted = compose_insert_text(payload, self.settings, replace_context=False)
             base_context = f"{payload.context}{inserted}"
             context = trim_context(base_context, self.settings.context_window)
-            prediction = self._generator().predict(
+            self._start_prediction(
+                "prefetch",
                 context,
-                strictness=self.settings.strictness,
-                correction=self.settings.correction,
+                "",
+                base_context=base_context,
+                source_payload=payload,
             )
-            next_payload = prediction_to_payload(context, prediction)
-            if next_payload is None:
-                self.prefetched_payload = None
-                self.prefetch_base_context = ""
-                return
-            self.prefetched_payload = replace(next_payload, kind=SuggestionKind.CONTINUE)
-            self.prefetch_base_context = base_context
 
         def _suggest_continue(self) -> None:
             if not self.active_context:
@@ -1095,18 +1216,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
                 self._show_payload(payload)
                 return
             context = trim_context(self.active_context, self.settings.context_window)
-            prediction = self._generator().predict(
-                context,
-                strictness=self.settings.strictness,
-                correction=self.settings.correction,
-            )
-            payload = prediction_to_payload(context, prediction)
-            if payload is None:
-                self.window.status.setText(f"No continue: {prediction.reason}")
-                print(f"Continue rejected: {prediction.reason}", flush=True)
-                return
-            payload = replace(payload, kind=SuggestionKind.CONTINUE)
-            self._show_payload(payload)
+            self._start_prediction("continue", context, "Predicting next...")
 
         def trigger_prediction(self) -> None:
             print("Prediction requested", flush=True)
@@ -1130,17 +1240,7 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             self.active_context = context
             self.prefetched_payload = None
             self.prefetch_base_context = ""
-            prediction = self._generator().predict(
-                context,
-                strictness=self.settings.strictness,
-                correction=self.settings.correction,
-            )
-            payload = prediction_to_payload(context, prediction)
-            if payload is None:
-                self.window.status.setText(f"No output: {prediction.reason}")
-                print(f"Prediction rejected: {prediction.reason}", flush=True)
-                return
-            self._show_payload(payload)
+            self._start_prediction("manual", context, "Predicting...")
 
         def accept_suggestion(self) -> None:
             self._stop_suggestion_keys()
@@ -1222,13 +1322,16 @@ def run_desktop_app(settings_path: str | Path = "configs/app.yaml") -> int:
             config = load_config(profile.config_path)
             stats = prepare_dataset(config.paths.raw_dir, config.paths.processed_dir, config.training.validation_ratio)
             self.generator = None
-            self.window.status.setText(f"Imported {copied} files, prepared {stats.lines} lines")
+            self.window.status.setText(f"Imported {copied} files, indexed {stats.lines} lines")
 
         def quit(self) -> None:
             self._stop_suggestion_keys()
             if self.model_build_thread is not None and self.model_build_thread.isRunning():
                 self.model_build_thread.terminate()
                 self.model_build_thread.wait(500)
+            if self.prediction_thread is not None and self.prediction_thread.isRunning():
+                self.prediction_thread.terminate()
+                self.prediction_thread.wait(500)
             self.auto_read_thread.stop()
             self.auto_read_thread.wait(500)
             self.hotkey_thread.stop()

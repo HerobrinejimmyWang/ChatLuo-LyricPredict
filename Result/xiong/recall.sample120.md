@@ -8,7 +8,7 @@ Cell format: correct / abstain / wrong.
 
 | Scenario (N) | char-match:strict | char-match:balanced | char-match:tolerant |
 |--------------|-------------------|---------------------|---------------------|
-| Multi-sentences (40) | 23 / 17 / 0 | 39 / 1 / 0 | 39 / 1 / 0 |
+| Multi-sentences (40) | 30 / 10 / 0 | 39 / 1 / 0 | 40 / 0 / 0 |
 | Single sentence (40) | 40 / 0 / 0 | 40 / 0 / 0 | 40 / 0 / 0 |
 | Complex context (40) | 40 / 0 / 0 | 40 / 0 / 0 | 40 / 0 / 0 |
 
@@ -16,6 +16,6 @@ Cell format: correct / abstain / wrong.
 
 | Scenario | char-match:strict | char-match:balanced | char-match:tolerant |
 |----------|-------------------|---------------------|---------------------|
-| Multi-sentences | 147.50 / 144.89 ms | 163.45 / 158.11 ms | 143.61 / 139.78 ms |
-| Single sentence | 37.41 / 33.76 ms | 39.00 / 38.94 ms | 39.51 / 37.87 ms |
-| Complex context | 141.17 / 139.48 ms | 139.88 / 140.93 ms | 134.11 / 132.82 ms |
+| Multi-sentences | 199.21 / 192.22 ms | 197.36 / 190.11 ms | 197.09 / 188.98 ms |
+| Single sentence | 53.60 / 54.25 ms | 54.16 / 51.79 ms | 57.37 / 56.98 ms |
+| Complex context | 178.78 / 180.22 ms | 177.77 / 183.33 ms | 171.51 / 170.23 ms |

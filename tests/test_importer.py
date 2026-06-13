@@ -27,6 +27,14 @@ def test_prepare_dataset_deduplicates_identical_cleaned_songs(tmp_path):
     assert stats.songs == 1
     assert stats.lines == 2
     assert (processed / "train.txt").read_text(encoding="utf-8").count("同一首歌") == 1
+    report = json.loads((processed / "near_duplicate_report.json").read_text(encoding="utf-8"))
+    assert report["exact_duplicates"] == [
+        {
+            "kept_source": "a.lrc",
+            "skipped_source": "b.lrc",
+            "lines": 2,
+        }
+    ]
 
 
 def test_prepare_dataset_from_sources_combines_sources_and_writes_manifest(tmp_path):
@@ -43,9 +51,44 @@ def test_prepare_dataset_from_sources_combines_sources_and_writes_manifest(tmp_p
     assert stats.songs == 2
     assert stats.lines == 4
     assert manifest["stats"]["files"] == 2
+    assert manifest["duplicate_policy"] == "report-only"
+    assert manifest["duplicate_report"] == "near_duplicate_report.json"
     assert [source["files"] for source in manifest["sources"]] == [1, 1]
     assert "第一句" in (processed / "train.txt").read_text(encoding="utf-8")
     assert "第三句" in (processed / "train.txt").read_text(encoding="utf-8")
+
+
+def test_prepare_dataset_reports_near_duplicate_songs_without_dropping_them(tmp_path):
+    raw = tmp_path / "raw"
+    processed = tmp_path / "processed"
+    write_uploaded_file(
+        raw,
+        "original.lrc",
+        "\n".join(["same line one", "same line two", "same line three", "same line four", "extra bridge"]).encode("utf-8"),
+    )
+    write_uploaded_file(
+        raw,
+        "cover.lrc",
+        "\n".join(["same line one", "same line two", "same line three", "same line four"]).encode("utf-8"),
+    )
+
+    stats = prepare_dataset(raw, processed, validation_ratio=0.0)
+
+    report = json.loads((processed / "near_duplicate_report.json").read_text(encoding="utf-8"))
+    assert stats.songs == 2
+    assert report["exact_duplicates"] == []
+    assert report["near_duplicates"] == [
+        {
+            "source_a": "cover.lrc",
+            "source_b": "original.lrc",
+            "containment": 1.0,
+            "jaccard": 0.8,
+            "shared_line_keys": 4,
+            "line_keys_a": 4,
+            "line_keys_b": 5,
+            "recommendation": "review",
+        }
+    ]
 
 
 def test_prepare_dataset_filters_credit_metadata_variants(tmp_path):

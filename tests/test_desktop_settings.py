@@ -4,7 +4,7 @@ from lyricpredict.desktop.settings import AppSettings, coerce_settings, load_app
 def test_app_settings_defaults_and_frequency_mapping():
     settings = AppSettings()
 
-    assert settings.mode == "auto"
+    assert settings.mode == "matching"
     assert settings.strictness == "balanced"
     assert settings.read_change_threshold == 8
     assert settings.auto_read_enabled is False
@@ -26,7 +26,7 @@ def test_app_settings_coerce_invalid_values():
         }
     )
 
-    assert settings.mode == "auto"
+    assert settings.mode == "matching"
     assert settings.strictness == "balanced"
     assert settings.context_window == 32
     assert settings.auto_read_scope == "used-windows"
@@ -44,7 +44,7 @@ def test_app_settings_save_and_load_roundtrip(tmp_path):
     path = tmp_path / "app.yaml"
     expected = AppSettings(
         enabled=False,
-        mode="model-only",
+        mode="matching",
         strictness="strict",
         context_window=16,
         suggestion_position="top-left",
@@ -58,7 +58,7 @@ def test_app_settings_save_and_load_roundtrip(tmp_path):
     actual = load_app_settings(path)
 
     assert actual.enabled is False
-    assert actual.mode == "model-only"
+    assert actual.mode == "matching"
     assert actual.strictness == "strict"
     assert actual.context_window == 16
     assert actual.suggestion_position == "top-left"
